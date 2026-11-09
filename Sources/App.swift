@@ -1,0 +1,765 @@
+import SwiftUI
+import AppKit
+import ServiceManagement
+import Combine
+
+@main
+enum Main {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
+    }
+}
+
+/// One Tracker per log folder, so Lab and XT running together can't mix their lines.
+final class LogSource {
+    let follower: LogFollower
+    let tracker = Tracker()
+    var lastLookup: [String: Date] = [:]
+    var lookedUpRecent: Set<String> = []
+
+    init(folder: URL) { follower = LogFollower(folder: folder) }
+}
+
+/// Lists mounted volumes and works out their ticks. Only volumes Silverstack has on record as
+/// a source are read, and only their file listing.
+enum VolumeScanner {
+    static func scan() -> [VolumeStatus] {
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeUUIDStringKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]
+        let mounted = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        return mounted.filter { $0.path.hasPrefix("/Volumes/") }.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
+            let total = values.volumeTotalCapacity ?? 0
+            let name = values.volumeName ?? url.lastPathComponent
+            var status = VolumeStatus(path: url.path, name: name, key: values.volumeUUIDString ?? name,
+                                      freeBytes: Double(values.volumeAvailableCapacity ?? 0), totalBytes: Double(total))
+            if let record = ProjectDatabase.ingestRecord(label: status.name, capacity: Int64(total)) {
+                let walk = AnySequence { files(in: url) }
+                status.ingested = VolumeCheck.isIngested(record, files: walk)
+                if status.ingested {
+                    status.transcoded = VolumeCheck.isTranscoded(record, paths: walk.map(\.path))
+                }
+            }
+            return status
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func files(in volume: URL) -> AnyIterator<(path: String, size: Double)> {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        let walker = FileManager.default.enumerator(at: volume, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
+        let root = volume.resolvingSymlinksInPath().path
+        return AnyIterator {
+            while let file = walker?.nextObject() as? URL {
+                guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+                let path = String(file.resolvingSymlinksInPath().path.dropFirst(root.count))
+                return (path, Double(values.fileSize ?? 0))
+            }
+            return nil
+        }
+    }
+}
+
+final class Store: ObservableObject {
+    static let keepFinished: TimeInterval = 8
+    static let silentAfter: TimeInterval = 20
+    static let recentShown = 5
+    static let settleDelay: TimeInterval = 5
+
+    @Published var jobs: [Job] = []
+    @Published var recentJobs: [Job] = []
+    @Published var volumes: [VolumeStatus] = []
+    @Published var hiddenVolumes = Set(UserDefaults.standard.stringArray(forKey: "hiddenVolumes") ?? [])
+    @Published var isEditingVolumes = false
+    @Published var demoJobs: [Job]?
+    @Published var isHovering = false
+    @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var now = Date()
+
+    private var sources: [LogSource] = []
+    private var timer: Timer?
+    private let silverstackBundles = "com.pomfort.Silverstack"
+    private let scanQueue = DispatchQueue(label: "volume-scan")
+    private var isScanning = false
+    private var scanAgain = false
+
+    var shown: [Job] { demoJobs ?? jobs }
+    /// Finished jobs newest first, leaving out any still on show as a live row.
+    var recent: [RecentRow] {
+        let live = Set(shown.map(\.id))
+        return Array(RecentRow.group(recentJobs.filter { !live.contains($0.id) }).prefix(Self.recentShown))
+    }
+    var running: [Job] { shown.filter { !$0.isWaiting } }
+    var queued: [Job] { shown.filter(\.isWaiting) }
+    var primary: Job? { running.first { !$0.state.isFinished } ?? queued.first ?? shown.last }
+
+    func start() {
+        let root = Testing.logRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        sources = folders.filter { $0.lastPathComponent.hasPrefix("Silverstack ") }.map(LogSource.init)
+        for source in sources {
+            source.follower.readRecent().forEach(source.tracker.ingest)
+            source.tracker.pruneAfterScan(silverstackStarted: silverstackStarted)
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        tick()
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshVolumes() }
+        }
+        refreshVolumes()
+    }
+
+    /// Runs one scan at a time, off the main thread, as cards can be slow to read.
+    func refreshVolumes() {
+        guard !isScanning else {
+            scanAgain = true
+            return
+        }
+        isScanning = true
+        scanQueue.async { [weak self] in
+            let found = VolumeScanner.scan()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isScanning = false
+                if found != self.volumes { self.volumes = found }
+                if self.scanAgain {
+                    self.scanAgain = false
+                    self.refreshVolumes()
+                }
+            }
+        }
+    }
+
+    private var silverstackIsRunning: Bool {
+        if Testing.logRoot != nil { return true }
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier?.hasPrefix(silverstackBundles) == true
+        }
+    }
+
+    /// The oldest running copy, so a job belonging to either of Lab and XT is kept.
+    private var silverstackStarted: Date? {
+        if Testing.logRoot != nil { return nil }
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier?.hasPrefix(silverstackBundles) == true }
+            .compactMap(\.launchDate).min()
+    }
+
+    private func tick() {
+        // Nothing on screen needs the clock, so leave the view alone between jobs.
+        if !shown.isEmpty || isHovering { now = Date() }
+        let running = silverstackIsRunning
+        for source in sources {
+            source.follower.readNew().forEach(source.tracker.ingest)
+            // A job can't be progressing once the app has gone; a crash writes no end state.
+            if !running { source.tracker.clear() }
+            source.tracker.prune(now: Date(), finishedFor: Self.keepFinished)
+            lookUpSizes(source)
+        }
+        let combined = sources.flatMap(\.tracker.jobs)
+        if combined.map(\.signature) != jobs.map(\.signature) { jobs = combined }
+        let finished = sources.flatMap(\.tracker.recent).sorted { $0.endedAt ?? .distantPast > $1.endedAt ?? .distantPast }
+        if finished.map(\.signature) != recentJobs.map(\.signature) {
+            recentJobs = finished
+            refreshVolumes()
+            // The log can get ahead of the database saving the job as finished.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in self?.refreshVolumes() }
+        }
+    }
+
+    private func lookUpSizes(_ source: LogSource) {
+        for job in source.tracker.jobs where job.info == nil && !job.state.isFinished {
+            guard now.timeIntervalSince(source.lastLookup[job.id] ?? .distantPast) >= 2,
+                  let key = job.databaseKey else { continue }
+            source.lastLookup[job.id] = now
+            if let info = ProjectDatabase.info(store: key.store, row: key.row) {
+                source.tracker.setInfo(info, forJob: job.id)
+            }
+        }
+        // Jobs found by the startup scan finished before anything asked for their sizes.
+        for job in source.tracker.recent where job.info == nil && !source.lookedUpRecent.contains(job.id) {
+            source.lookedUpRecent.insert(job.id)
+            if let key = job.databaseKey, let info = ProjectDatabase.info(store: key.store, row: key.row) {
+                source.tracker.setInfo(info, forJob: job.id)
+            }
+        }
+    }
+
+    var visibleVolumes: [VolumeStatus] { volumes.visible(hidden: hiddenVolumes) }
+    /// Every volume while choosing what to hide, otherwise only the ones left showing.
+    var listedVolumes: [VolumeStatus] { isEditingVolumes ? volumes : visibleVolumes }
+
+    func toggleHidden(_ volume: VolumeStatus) {
+        if hiddenVolumes.remove(volume.key) == nil { hiddenVolumes.insert(volume.key) }
+        UserDefaults.standard.set(hiddenVolumes.sorted(), forKey: "hiddenVolumes")
+    }
+
+    func toggleLogin() {
+        do {
+            if opensAtLogin { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() }
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+        opensAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    func dismiss(_ job: Job) {
+        sources.forEach { $0.tracker.dismiss(job.id) }
+        demoJobs = nil
+        tick()
+    }
+
+    func runDemo() {
+        let started = Date()
+        func job(_ fraction: Double) -> Job {
+            var job = Job(id: "demo", url: "", kind: "Copy", workflow: "Demo Workflow",
+                          startedAt: started.addingTimeInterval(-60), lastActivity: Date())
+            job.info = JobInfo(title: "DEMO_REEL_A001", sizes: ["A001C007.MOV": 80e9], totalBytes: 80e9, totalTasks: 24)
+            job.active = ["A001C007.MOV": fraction]
+            job.phase = fraction < 0.6 ? "copy" : "verify"
+            job.speed = fraction < 0.6 ? "466.6 MB/s" : "3.21 GB/s"
+            job.currentFile = "A001C007.MOV"
+            if fraction >= 1 {
+                job.state = .succeeded
+                job.endedAt = Date()
+            }
+            return job
+        }
+        var queued = Job(id: "demo-queued", url: "", kind: "Render", startedAt: started.addingTimeInterval(-60), lastActivity: Date())
+        queued.info = JobInfo(title: "DEMO_REEL_A001", totalTasks: 24)
+        var fraction = 0.0
+        demoJobs = [job(0), queued]
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+            guard let self else { return timer.invalidate() }
+            fraction = min(fraction + 0.01, 1)
+            self.demoJobs = fraction < 1 ? [job(fraction), queued] : [job(fraction)]
+            if fraction >= 1 {
+                timer.invalidate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.demoJobs = nil }
+            }
+        }
+    }
+}
+
+extension Job {
+    /// Enough to tell whether the island needs redrawing.
+    var signature: String {
+        "\(id)|\(state)|\(Int(lastActivity.timeIntervalSince1970 * 2))|\(info != nil)|\(errors)|\(isWaiting)"
+    }
+}
+
+struct IslandMetrics {
+    var notchWidth: CGFloat
+    var height: CGFloat
+    var earWidth: CGFloat = 64
+    var expandedWidth: CGFloat = 460
+    var collapsedWidth: CGFloat { notchWidth + earWidth * 2 }
+
+    static func expandedHeight(running: Int, queued: Int, recent: Int, volumes: Int?, hovering: Bool, top: CGFloat) -> CGFloat {
+        func list(_ rows: Int) -> CGFloat { rows > 0 ? 26 + CGFloat(rows) * 26 : 0 }
+        let controls: CGFloat = hovering ? 34 : 0
+        let volumeHeight = volumes.map { 26 + CGFloat($0) * 26 } ?? 0
+        return top + 8 + CGFloat(min(running, 3)) * 92 + list(queued) + list(recent) + volumeHeight + controls + 12
+    }
+}
+
+struct IslandView: View {
+    @ObservedObject var store: Store
+    let metrics: IslandMetrics
+
+    private var expanded: Bool {
+        store.isHovering || store.shown.contains { $0.state == .failed }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if expanded { expandedContent } else { collapsedContent }
+            }
+            .frame(width: expanded ? metrics.expandedWidth : metrics.collapsedWidth, alignment: .top)
+            .background(Color.black)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: expanded ? 22 : 12,
+                                              bottomTrailingRadius: expanded ? 22 : 12))
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+        .foregroundColor(.white)
+        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: expanded)
+    }
+
+    private func tint(_ job: Job) -> Color {
+        switch job.state {
+        case .succeeded: return job.kind == "Render" ? .blue : .green
+        case .failed: return .red
+        case .paused, .cancelled: return .orange
+        default:
+            if isSilent(job) || job.errors > 0 { return .orange }
+            return job.phase == "verify" ? .cyan : .blue
+        }
+    }
+
+    private func isSilent(_ job: Job) -> Bool {
+        job.state == .running && !job.isWaiting && store.now.timeIntervalSince(job.lastActivity) >= Store.silentAfter
+    }
+
+    @ViewBuilder private var collapsedContent: some View {
+        if let job = store.primary {
+            HStack(spacing: 0) {
+                ring(job, size: 20).frame(width: metrics.earWidth)
+                Spacer(minLength: metrics.notchWidth)
+                Text(shortStatus(job))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundColor(job.state == .running ? .white : tint(job))
+                    .frame(width: metrics.earWidth)
+            }
+            .frame(height: metrics.height)
+        }
+    }
+
+    private func shortStatus(_ job: Job) -> String {
+        switch job.state {
+        case .succeeded: return "Done"
+        case .failed: return "Failed"
+        case .cancelled: return "Stopped"
+        case .paused: return "Paused"
+        case _ where job.isWaiting: return "Queued"
+        default: return job.fraction.map { "\(percent($0))%" } ?? "…"
+        }
+    }
+
+    /// Rounds down, so nothing shows 100% until Silverstack reports the job finished.
+    private func percent(_ fraction: Double) -> Int { min(Int(fraction * 100), 99) }
+
+    private func ring(_ job: Job, size: CGFloat) -> some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.18), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: CGFloat(job.fraction ?? 0))
+                .stroke(tint(job), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            if job.state == .succeeded {
+                Image(systemName: "checkmark").font(.system(size: size * 0.45, weight: .bold)).foregroundColor(.green)
+            }
+            if job.state == .failed {
+                Image(systemName: "exclamationmark").font(.system(size: size * 0.5, weight: .bold)).foregroundColor(.red)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private var expandedContent: some View {
+        VStack(spacing: 8) {
+            ForEach(store.running.prefix(3)) { row($0).frame(height: 84) }
+            if !store.queued.isEmpty { queuedList }
+            if store.isHovering {
+                if !store.recent.isEmpty { recentList }
+                if !store.volumes.isEmpty { volumeList }
+                controls
+            }
+        }
+        .padding(.top, metrics.height + 8)
+        .padding(.bottom, 12)
+        .padding(.horizontal, 18)
+    }
+
+    private var volumeList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Mounted volumes")
+                Spacer()
+                let hidden = store.volumes.count - store.visibleVolumes.count
+                if hidden > 0 && !store.isEditingVolumes { Text("\(hidden) hidden") }
+                Button(store.isEditingVolumes ? "Done" : "Edit") { store.isEditingVolumes.toggle() }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white.opacity(0.85))
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.5))
+            .frame(height: 18, alignment: .top)
+            ForEach(store.listedVolumes) { volumeRow($0).frame(height: 26) }
+        }
+    }
+
+    private func volumeRow(_ volume: VolumeStatus) -> some View {
+        let isHidden = store.hiddenVolumes.contains(volume.key)
+        return HStack(spacing: 8) {
+            HStack(spacing: 3) {
+                tick(.green, shown: volume.ingested)
+                tick(.blue, shown: volume.transcoded)
+            }
+            Text(volume.name).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            if store.isEditingVolumes {
+                Button(isHidden ? "Show" : "Hide") { store.toggleHidden(volume) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+            } else {
+                Text("\(Format.bytes(volume.freeBytes)) free").font(.system(size: 11.5).monospacedDigit())
+                    .foregroundColor(.white.opacity(0.6)).lineLimit(1).fixedSize()
+            }
+        }
+        .opacity(isHidden ? 0.45 : 1)
+    }
+
+    /// Keeps its slot when not shown, so volume names line up.
+    private func tick(_ color: Color, shown: Bool) -> some View {
+        Image(systemName: "checkmark.circle")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(color)
+            .frame(width: 16)
+            .opacity(shown ? 1 : 0)
+    }
+
+    private var controls: some View {
+        HStack(spacing: 16) {
+            Button("Show Demo") { store.runDemo() }
+            Button(store.opensAtLogin ? "✓ Open at Login" : "Open at Login") { store.toggleLogin() }
+            Spacer()
+            Button("Quit") { NSApp.terminate(nil) }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundColor(.white.opacity(0.75))
+        .frame(height: 26)
+    }
+
+    private var queuedList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Queued")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.5))
+                .frame(height: 18, alignment: .top)
+            ForEach(store.queued) { queuedRow($0).frame(height: 26) }
+        }
+    }
+
+    private func queuedRow(_ job: Job) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.6))
+                .frame(width: 16)
+            Text(job.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            Text(queuedDetail(job)).font(.system(size: 11.5).monospacedDigit())
+                .foregroundColor(.white.opacity(0.6)).lineLimit(1).fixedSize()
+        }
+    }
+
+    private func queuedDetail(_ job: Job) -> String {
+        var parts = [job.kindLabel]
+        if let info = job.info {
+            parts.append(job.showsBytes ? Format.bytes(info.totalBytes) : "\(info.totalTasks) files")
+        }
+        parts.append("waiting \(Format.duration(store.now.timeIntervalSince(job.startedAt)))")
+        return parts.joined(separator: " · ")
+    }
+
+    private var recentList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Recently completed")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.5))
+                .frame(height: 18, alignment: .top)
+            ForEach(store.recent) { recentRow($0).frame(height: 26) }
+        }
+    }
+
+    private func recentRow(_ row: RecentRow) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 3) {
+                if row.jobs[0].state == .failed || row.jobs[0].state == .cancelled {
+                    Image(systemName: recentIcon(row.jobs[0]))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(tint(row.jobs[0]))
+                        .frame(width: 16)
+                    tick(.blue, shown: false)
+                } else {
+                    tick(.green, shown: row.hasGreenTick)
+                    tick(.blue, shown: row.hasBlueTick)
+                }
+            }
+            Text(row.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            Text(recentDetail(row)).font(.system(size: 11.5).monospacedDigit())
+                .foregroundColor(.white.opacity(0.6)).lineLimit(1).fixedSize()
+        }
+    }
+
+    private func recentIcon(_ job: Job) -> String {
+        switch job.state {
+        case .failed: return "xmark.circle.fill"
+        default: return "stop.circle.fill"
+        }
+    }
+
+    private func recentDetail(_ row: RecentRow) -> String {
+        let job = row.jobs[0]
+        var parts = [row.hasGreenTick && row.hasBlueTick ? "Offload + Transcode" : job.kindLabel]
+        if job.state == .failed { parts.append("Failed") }
+        if job.state == .cancelled { parts.append("Stopped") }
+        let sized = row.offload ?? job
+        if job.state == .succeeded, let info = sized.info {
+            parts.append(sized.showsBytes ? Format.bytes(info.totalBytes) : "\(info.totalTasks) files")
+        }
+        if let ended = job.endedAt { parts.append(Format.ago(store.now.timeIntervalSince(ended))) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func row(_ job: Job) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(job.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 8)
+                if job.state == .failed {
+                    Button("Dismiss") { store.dismiss(job) }.buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.75))
+                }
+                Text(shortStatus(job))
+                    .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundColor(tint(job))
+            }
+            // Drawn by hand because the system bar turns grey in a window that isn't key.
+            GeometryReader { bar in
+                Capsule().fill(Color.white.opacity(0.18))
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(tint(job)).frame(width: bar.size.width * CGFloat(job.fraction ?? 0))
+                    }
+            }
+            .frame(height: 6)
+            Text(detailLine(job)).font(.system(size: 11.5).monospacedDigit())
+                .foregroundColor(.white.opacity(0.72)).lineLimit(1)
+            Text(fileLine(job)).font(.system(size: 11.5))
+                .foregroundColor(job.lastError == nil ? .white.opacity(0.5) : .orange)
+                .lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    private func detailLine(_ job: Job) -> String {
+        var parts = [job.phase.map { $0.capitalized } ?? job.kindLabel]
+        if job.state == .finishing { parts = ["Finishing"] }
+        if let info = job.info {
+            if job.showsBytes && !job.state.isFinished {
+                parts.append("\(Format.bytes(job.doneBytes)) of \(Format.bytes(info.totalBytes))")
+            }
+            parts.append("\(job.doneTasks)/\(info.totalTasks) files")
+        }
+        if job.state == .running, let speed = job.speed { parts.append(speed) }
+        if let remaining = job.remaining(at: store.now) { parts.append("\(Format.duration(remaining)) left") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func fileLine(_ job: Job) -> String {
+        if let error = job.lastError { return "\(job.errors) error\(job.errors == 1 ? "" : "s"): \(error)" }
+        if isSilent(job) {
+            return "No update for \(Format.duration(store.now.timeIntervalSince(job.lastActivity)))"
+        }
+        return job.currentFile ?? ""
+    }
+}
+
+/// Takes a click straight away, as this window never becomes key.
+final class IslandHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Stays above fullscreen apps and never takes focus away from Silverstack.
+final class IslandPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let store = Store()
+    private var panel: IslandPanel!
+    private var statusItem: NSStatusItem!
+    private var metrics = IslandMetrics(notchWidth: 190, height: 37)
+    private var refresh: Any?
+    private var hoverTimer: Timer?
+    private var volumeUpdates: Any?
+    private var hiddenUpdates: Any?
+    private let menu = NSMenu()
+    private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        metrics = Self.measure(Self.screen)
+        setUpMenu()
+        panel = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        panel.isMovable = false
+        panel.contentView = IslandHostingView(rootView: IslandView(store: store, metrics: metrics))
+
+        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        refresh = store.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { self?.layoutPanel() }
+        }
+        volumeUpdates = store.$volumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
+        hiddenUpdates = store.$hiddenVolumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
+        store.start()
+        layoutPanel()
+        // Reads the cursor directly: a panel that never activates doesn't reliably get hover events.
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.updateHover()
+        }
+    }
+
+    /// The notched display if there is one, otherwise the display with the menu bar.
+    private static var screen: NSScreen {
+        NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.screens[0]
+    }
+
+    private static func measure(_ screen: NSScreen) -> IslandMetrics {
+        guard screen.safeAreaInsets.top > 0,
+              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
+            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6)
+        }
+        return IslandMetrics(notchWidth: screen.frame.width - left.width - right.width,
+                             height: screen.safeAreaInsets.top)
+    }
+
+    @objc private func screensChanged() {
+        metrics = Self.measure(Self.screen)
+        panel.contentView = IslandHostingView(rootView: IslandView(store: store, metrics: metrics))
+        layoutPanel()
+    }
+
+    private func updateHover() {
+        // While hidden the notch itself is the target, so the island can be opened between
+        // jobs without menu bar items beside it setting it off. Grown slightly because the
+        // cursor can rest on the very top edge of the screen.
+        let target = panel.isVisible ? panel.frame : notchFrame
+        let inside = target.insetBy(dx: 0, dy: -2).contains(NSEvent.mouseLocation)
+        if inside && !store.isHovering { store.refreshVolumes() }
+        if inside != store.isHovering { store.isHovering = inside }
+        if !inside && store.isEditingVolumes { store.isEditingVolumes = false }
+    }
+
+    private var notchFrame: NSRect {
+        topCentered(NSSize(width: metrics.notchWidth, height: metrics.height))
+    }
+
+    private func topCentered(_ size: NSSize) -> NSRect {
+        let screen = Self.screen.frame
+        return NSRect(x: screen.midX - size.width / 2, y: screen.maxY - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    /// Sized to the island so the rest of the menu bar stays clickable.
+    private func layoutPanel() {
+        let jobs = store.shown
+        let recent = store.isHovering ? store.recent.count : 0
+        guard !jobs.isEmpty || store.isHovering else {
+            panel.orderOut(nil)
+            return
+        }
+        let expanded = store.isHovering || jobs.contains { $0.state == .failed }
+        let size = expanded
+            ? NSSize(width: metrics.expandedWidth,
+                     height: IslandMetrics.expandedHeight(running: store.running.count, queued: store.queued.count,
+                                                          recent: recent,
+                                                          volumes: store.isHovering && !store.volumes.isEmpty ? store.listedVolumes.count : nil,
+                                                          hovering: store.isHovering, top: metrics.height))
+            : NSSize(width: metrics.collapsedWidth, height: metrics.height)
+        let frame = topCentered(size)
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    private func setUpMenu() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
+                                           accessibilityDescription: "Silverstack Island")
+        loginItem.target = self
+        menu.delegate = self
+        rebuildMenu()
+        statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { store.refreshVolumes() }
+
+    private func rebuildMenu() {
+        menu.removeAllItems()
+        let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        if store.visibleVolumes.isEmpty {
+            menu.addItem(withTitle: "No volumes to show", action: nil, keyEquivalent: "").isEnabled = false
+        }
+        for volume in store.visibleVolumes { menu.addItem(item(for: volume)) }
+        menu.addItem(.separator())
+        let hide = menu.addItem(withTitle: "Hide Volumes", action: nil, keyEquivalent: "")
+        let choices = NSMenu()
+        for volume in store.volumes {
+            let choice = choices.addItem(withTitle: volume.name, action: #selector(toggleHidden), keyEquivalent: "")
+            choice.target = self
+            choice.representedObject = volume.key
+            choice.state = store.hiddenVolumes.contains(volume.key) ? .on : .off
+        }
+        hide.submenu = choices
+        menu.addItem(withTitle: "Show Demo", action: #selector(showDemo), keyEquivalent: "").target = self
+        loginItem.state = store.opensAtLogin ? .on : .off
+        menu.addItem(loginItem)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Silverstack Island", action: #selector(NSApplication.terminate), keyEquivalent: "q")
+    }
+
+    private func item(for volume: VolumeStatus) -> NSMenuItem {
+        let item = NSMenuItem(title: volume.name, action: #selector(reveal), keyEquivalent: "")
+        item.target = self
+        item.representedObject = volume.path
+        item.image = Self.ticks(ingested: volume.ingested, transcoded: volume.transcoded)
+        let title = NSMutableAttributedString(string: volume.name, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+        title.append(NSAttributedString(string: "   \(Format.bytes(volume.freeBytes)) free", attributes: [
+            .font: NSFont.menuFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        item.attributedTitle = title
+        if volume.transcoded {
+            item.toolTip = "Ingest and transcoding complete"
+        } else if volume.ingested {
+            item.toolTip = "Ingest complete"
+        }
+        return item
+    }
+
+    /// Two fixed slots, so names line up whichever ticks a volume has.
+    private static func ticks(ingested: Bool, transcoded: Bool) -> NSImage {
+        let slot: CGFloat = 18
+        return NSImage(size: NSSize(width: slot * 2, height: slot), flipped: false) { _ in
+            for (index, color) in [(0, NSColor.systemGreen), (1, NSColor.systemBlue)] {
+                guard index == 0 ? ingested : transcoded else { continue }
+                let shape = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+                let tint = NSImage.SymbolConfiguration(paletteColors: [color])
+                let symbol = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: nil)?
+                    .withSymbolConfiguration(shape.applying(tint))
+                symbol?.draw(in: NSRect(x: CGFloat(index) * slot + 1, y: 1, width: slot - 2, height: slot - 2))
+            }
+            return true
+        }
+    }
+
+    @objc private func toggleHidden(_ item: NSMenuItem) {
+        guard let volume = store.volumes.first(where: { $0.key == item.representedObject as? String }) else { return }
+        store.toggleHidden(volume)
+    }
+
+    @objc private func reveal(_ item: NSMenuItem) {
+        guard let path = item.representedObject as? String else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    @objc private func showDemo() { store.runDemo() }
+
+    @objc private func toggleLogin(_ item: NSMenuItem) {
+        store.toggleLogin()
+        item.state = store.opensAtLogin ? .on : .off
+    }
+}
