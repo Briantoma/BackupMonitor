@@ -14,6 +14,8 @@ final class Updater: ObservableObject {
     }
 
     @Published private(set) var available: Release?
+    /// The outcome of the last check, shown in Settings: nil while checking or before the first one.
+    @Published private(set) var result: String?
     private var lastCheck = Date.distantPast
     private var timer: Timer?
 
@@ -32,14 +34,19 @@ final class Updater: ObservableObject {
 
     func check() async {
         lastCheck = Date()
+        result = nil
         var request = URLRequest(url: Self.latestRelease)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("BackupMonitor", forHTTPHeaderField: "User-Agent")
         // Offline, rate-limited or no release yet: try again at the next check.
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let release = Self.parse(data) else { return }
+              let release = Self.parse(data) else {
+            result = "Couldn't check for updates"
+            return
+        }
         available = Self.isNewer(release.version, than: current) ? release : nil
+        result = available == nil ? "Up to date" : nil
         if let available { notifyOnce(available) }
     }
 

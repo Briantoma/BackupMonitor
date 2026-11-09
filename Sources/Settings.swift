@@ -206,9 +206,14 @@ struct SettingsView: View {
                         Spacer()
                         Button("Download") { updater.download() }
                     } else {
-                        Text("Version \(version)").foregroundStyle(.secondary)
+                        Text("Version \(version) · \(updater.result ?? "Checking…")").foregroundStyle(.secondary)
                         Spacer()
+                        Button("Check for Updates") { Task { await updater.check() } }
+                            .disabled(updater.result == nil)
                     }
+                }
+                HStack {
+                    Spacer()
                     Button("Show Demo") { store.runDemo() }
                     Button("About") { About.show() }
                 }

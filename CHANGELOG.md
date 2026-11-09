@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2 - 2026-11-09
+
+- Check for Updates button at the bottom of Settings, with the result of the last check.
+
 ## 1.0.1 - 2026-11-09
 
 - Cmd-W closes Settings and About; Cmd-C, Cmd-V, Cmd-X, Cmd-A and Cmd-Z work in the Settings fields (the app now has a main menu while a window is open).
