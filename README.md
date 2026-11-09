@@ -4,6 +4,14 @@
 
 Follows Silverstack offload, verify and transcode progress at the top of the screen and in the menu bar, and warns when a card copies too slowly. For Silverstack XT and Silverstack Lab; Offload Manager is not supported. Not affiliated with Pomfort. Original idea from Joe Jamieson.
 
+<p align="center">
+  <img src="docs/island.png" width="430" alt="The island during an offload: progress, speed, time left, the queued transcode and mounted cards">
+  <img src="docs/island-slow.png" width="430" alt="The same offload with the slow copy warning: the job turns orange and names the slow card">
+</p>
+<p align="center">
+  <img src="docs/settings.png" width="360" alt="Settings: what to show, slow copy minimums per card group, hidden volumes, notifications and updates">
+</p>
+
 Open the DMG and drag Backup Monitor to Applications. Apple Silicon and Intel, macOS 13 or later. Signed by Oz Color and notarized by Apple, so it opens like any downloaded app. At first launch, allow notifications.
 
 ## Island
