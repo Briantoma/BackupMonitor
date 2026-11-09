@@ -2,7 +2,7 @@
 
 Shows Silverstack offload, verify and transcode progress in the MacBook notch. Stays hidden when nothing is running. Hover for details, queued jobs and recently completed jobs. Hovering the notch between jobs opens the recent list on its own.
 
-Open `Silverstack Island.app`. Hovering the notch opens the island at any time, with mounted volumes and Show Demo, Open at Login and Quit at the bottom. The same list is in the menu bar dropdown, when macOS has room to show the icon (on a full menu bar it may not). Edit, beside the Mounted volumes heading, chooses which volumes to hide, such as master drives. In the volume list, a green tick means every file now on the volume was copied by a successful Silverstack job, and a blue tick means every clip on it has also been transcoded. To rebuild after changing the code (this also runs the tests):
+Open `Silverstack Island.app`. Hovering the notch opens the island at any time, with mounted volumes and Show Demo, Open at Login and Quit at the bottom. The same list is in the menu bar dropdown, when macOS has room to show the icon (on a full menu bar it may not). Edit, beside the Mounted volumes heading, chooses which volumes to hide, such as master drives. Show in Menu Bar, in the menu bar dropdown, picks what the icon shows while a job runs: percentage, time remaining, number of jobs and a progress wheel, in any mix. In the volume list, a green tick means every file now on the volume was copied by a successful Silverstack job, and a blue tick means every clip on it has also been transcoded. Runs on Apple Silicon and Intel Macs; without a notch the island drops from the top centre of the screen. To rebuild after changing the code (this also runs the tests):
 
 ```bash
 ./build.sh

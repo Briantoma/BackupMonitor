@@ -428,10 +428,39 @@ enum Format {
         return "\(Int(seconds) / 86400)d ago"
     }
 
+    /// Rounds down, so nothing shows 100% until Silverstack reports the job finished.
+    static func percent(_ fraction: Double) -> Int { min(Int(fraction * 100), 99) }
+
     static func duration(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         if total < 60 { return "\(total)s" }
         if total < 3600 { return "\(total / 60)m \(total % 60)s" }
         return "\(total / 3600)h \(total % 3600 / 60)m"
+    }
+}
+
+/// What the menu bar item shows while a job runs, picked in its menu.
+struct MenuBarOptions: OptionSet {
+    let rawValue: Int
+    static let percent = MenuBarOptions(rawValue: 1 << 0)
+    static let remaining = MenuBarOptions(rawValue: 1 << 1)
+    static let jobCount = MenuBarOptions(rawValue: 1 << 2)
+    static let wheel = MenuBarOptions(rawValue: 1 << 3)
+}
+
+enum MenuBarStatus {
+    /// The job the menu bar follows: the first one actually copying or rendering.
+    static func active(_ jobs: [Job]) -> Job? { jobs.first { !$0.state.isFinished && !$0.isWaiting } }
+
+    static func text(for jobs: [Job], options: MenuBarOptions, now: Date) -> String {
+        guard let job = active(jobs) else { return "" }
+        var parts: [String] = []
+        if options.contains(.percent), let fraction = job.fraction { parts.append("\(Format.percent(fraction))%") }
+        if options.contains(.remaining), let remaining = job.remaining(at: now) { parts.append(Format.duration(remaining)) }
+        if options.contains(.jobCount) {
+            let count = jobs.filter { !$0.state.isFinished }.count
+            parts.append("\(count) job\(count == 1 ? "" : "s")")
+        }
+        return parts.joined(separator: " · ")
     }
 }

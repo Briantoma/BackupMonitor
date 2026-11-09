@@ -269,4 +269,16 @@ check(Format.duration(95), "1m 35s", "minutes")
 check(Format.duration(3700), "1h 1m", "hours")
 check(Format.bytes(91.26e9), "91.3 GB", "gigabytes")
 
+// The menu bar follows the first job that is actually working, and counts queued ones.
+var working = Job(id: "w", url: "", kind: "Copy", startedAt: Date(timeIntervalSince1970: 0), lastActivity: Date())
+working.info = JobInfo(title: "R", totalBytes: 100, totalTasks: 2, alreadyDoneBytes: 25)
+working.currentFile = "a.MP4"
+let waiting = Job(id: "q", url: "", kind: "Render", startedAt: Date(), lastActivity: Date())
+let at = Date(timeIntervalSince1970: 100)
+check(MenuBarStatus.text(for: [waiting], options: [.percent, .jobCount], now: at), "", "nothing while only queued")
+check(MenuBarStatus.text(for: [waiting, working], options: [.percent], now: at), "25%", "percent of the working job")
+check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining, .jobCount], now: at),
+      "25% · 5m 0s · 2 jobs", "every readout")
+check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job", "singular")
+
 if failures == 0 { print("All tests passed") } else { exit(1) }

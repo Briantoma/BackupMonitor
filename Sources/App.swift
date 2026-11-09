@@ -326,12 +326,9 @@ struct IslandView: View {
         case .cancelled: return "Stopped"
         case .paused: return "Paused"
         case _ where job.isWaiting: return "Queued"
-        default: return job.fraction.map { "\(percent($0))%" } ?? "…"
+        default: return job.fraction.map { "\(Format.percent($0))%" } ?? "…"
         }
     }
-
-    /// Rounds down, so nothing shows 100% until Silverstack reports the job finished.
-    private func percent(_ fraction: Double) -> Int { min(Int(fraction * 100), 99) }
 
     private func ring(_ job: Job, size: CGFloat) -> some View {
         ZStack {
@@ -584,6 +581,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hiddenUpdates: Any?
     private let menu = NSMenu()
     private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    private var menuBarOptions = MenuBarOptions(rawValue: UserDefaults.standard.object(forKey: "menuBarOptions") as? Int
+                                                ?? MenuBarOptions([.percent, .wheel]).rawValue)
+    private static let idleIcon = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
+                                          accessibilityDescription: "Silverstack Island")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         metrics = Self.measure(Self.screen)
@@ -601,7 +602,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
         refresh = store.objectWillChange.sink { [weak self] in
-            DispatchQueue.main.async { self?.layoutPanel() }
+            DispatchQueue.main.async {
+                self?.layoutPanel()
+                self?.updateStatusItem()
+            }
         }
         volumeUpdates = store.$volumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
         hiddenUpdates = store.$hiddenVolumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
@@ -676,9 +680,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setUpMenu() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
-                                           accessibilityDescription: "Silverstack Island")
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        updateStatusItem()
         loginItem.target = self
         menu.delegate = self
         rebuildMenu()
@@ -705,6 +710,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             choice.state = store.hiddenVolumes.contains(volume.key) ? .on : .off
         }
         hide.submenu = choices
+        let display = menu.addItem(withTitle: "Show in Menu Bar", action: nil, keyEquivalent: "")
+        let options = NSMenu()
+        for (title, option) in [("Percentage", MenuBarOptions.percent), ("Time Remaining", .remaining),
+                                ("Number of Jobs", .jobCount), ("Progress Wheel", .wheel)] {
+            let choice = options.addItem(withTitle: title, action: #selector(toggleMenuBarOption), keyEquivalent: "")
+            choice.target = self
+            choice.tag = option.rawValue
+            choice.state = menuBarOptions.contains(option) ? .on : .off
+        }
+        display.submenu = options
         menu.addItem(withTitle: "Show Demo", action: #selector(showDemo), keyEquivalent: "").target = self
         loginItem.state = store.opensAtLogin ? .on : .off
         menu.addItem(loginItem)
@@ -757,6 +772,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showDemo() { store.runDemo() }
+
+    @objc private func toggleMenuBarOption(_ item: NSMenuItem) {
+        let option = MenuBarOptions(rawValue: item.tag)
+        if menuBarOptions.contains(option) { menuBarOptions.remove(option) } else { menuBarOptions.insert(option) }
+        UserDefaults.standard.set(menuBarOptions.rawValue, forKey: "menuBarOptions")
+        item.state = menuBarOptions.contains(option) ? .on : .off
+        updateStatusItem()
+    }
+
+    /// The drive icon between jobs, the chosen readouts while one runs.
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let jobs = store.shown
+        let text = MenuBarStatus.text(for: jobs, options: menuBarOptions, now: Date())
+        let job = MenuBarStatus.active(jobs)
+        let image = job != nil && menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
+        if button.title != text { button.title = text }
+        if button.image !== image { button.image = image }
+    }
+
+    private static func wheel(_ fraction: Double) -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
+            let ring = rect.insetBy(dx: 2, dy: 2)
+            NSColor.black.withAlphaComponent(0.25).setStroke()
+            let track = NSBezierPath(ovalIn: ring)
+            track.lineWidth = 2.5
+            track.stroke()
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY), radius: ring.width / 2,
+                          startAngle: 90, endAngle: 90 - 360 * CGFloat(fraction), clockwise: true)
+            arc.lineWidth = 2.5
+            arc.lineCapStyle = .round
+            NSColor.black.setStroke()
+            arc.stroke()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "\(Format.percent(fraction))% done"
+        return image
+    }
 
     @objc private func toggleLogin(_ item: NSMenuItem) {
         store.toggleLogin()

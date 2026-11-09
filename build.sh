@@ -11,9 +11,13 @@ app="Silverstack Island.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-swiftc -O -parse-as-library -target arm64-apple-macos13.0 \
-    Sources/Core.swift Sources/Database.swift Sources/Log.swift Sources/App.swift \
-    -o "$app/Contents/MacOS/SilverstackIsland"
+# Universal: one binary for Apple Silicon and Intel Macs.
+for arch in arm64 x86_64; do
+    swiftc -O -parse-as-library -target $arch-apple-macos13.0 \
+        Sources/Core.swift Sources/Database.swift Sources/Log.swift Sources/App.swift \
+        -o .build/SilverstackIsland-$arch
+done
+lipo -create .build/SilverstackIsland-arm64 .build/SilverstackIsland-x86_64 -output "$app/Contents/MacOS/SilverstackIsland"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
