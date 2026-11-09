@@ -531,11 +531,12 @@ struct CardRules: Equatable {
     static let standard = CardRules(entries: [.camera: ["A", "B", "C", "D", "E", "F", "G", "H"], .audio: ["CANTAR_SD"]],
                                     minimum: [.camera: 500, .audio: 40, .other: 150])
 
-    /// A full name wins; otherwise the camera letter, the first letter of a reel-style name like
+    /// A name entry matches the start of the card name (CANTAR_SD, CANTAR_SD_2); otherwise the camera letter, the first letter of a reel-style name like
     /// A015CAZH, D902_261103 or E004. Anything else (SSD_01, DJI, A6MT3_20TB) is another source.
     func group(of volume: String) -> CardGroup {
         let name = volume.uppercased()
-        for group in [CardGroup.camera, .audio] where entries[group, default: []].contains(name) { return group }
+        for group in [CardGroup.camera, .audio]
+        where entries[group, default: []].contains(where: { $0.count > 1 && name.hasPrefix($0) }) { return group }
         let start = Array(name.prefix(4))
         guard start.count == 4, start[0].isASCII, start[0].isLetter,
               start.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return .other }

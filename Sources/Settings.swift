@@ -148,7 +148,7 @@ struct SettingsView: View {
                 ForEach(CardGroup.allCases, id: \.self) { group in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(group.label)
+                            Text(group == .other ? group.label : "\(group.label) starting with:")
                             Spacer()
                             if group == .other {
                                 Text("Everything else").foregroundStyle(.secondary)
@@ -158,6 +158,7 @@ struct SettingsView: View {
                             CommitField(value: prefs.rules.text(for: group), prompt: "Letters or card names, e.g. A, B, CANTAR_SD") {
                                 prefs.rules.setEntries($0, for: group)
                             }
+                            .textFieldStyle(.roundedBorder)
                         }
                         HStack {
                             Slider(value: minimum(group), in: 10...2000)
@@ -166,7 +167,8 @@ struct SettingsView: View {
                                     prefs.rules.minimum[group] = min(max(number.rounded(), 10), 2000)
                                 }
                             }
-                            .frame(width: 60).multilineTextAlignment(.trailing)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 64).multilineTextAlignment(.trailing)
                             Text("MB/s").foregroundStyle(.secondary)
                         }
                     }
@@ -174,7 +176,7 @@ struct SettingsView: View {
             } header: {
                 Text("Slow copy warning")
             } footer: {
-                Text("Separate entries with commas. A single letter is a camera letter, the first letter of names like A015CAZH or D902_261103; anything longer is a full card name. Warns once a card's real copy speed, from file sizes and copy times, is under its minimum.")
+                Text("Separate entries with commas. A single letter is a camera letter, the first letter of names like A015CAZH or D902_261103; anything longer matches the start of a card name. Warns once a card's real copy speed, from file sizes and copy times, is under its minimum.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -182,13 +184,13 @@ struct SettingsView: View {
                     Text("No volumes mounted").foregroundStyle(.secondary)
                 }
                 ForEach(store.volumes) { volume in
-                    Toggle(volume.name, isOn: Binding(get: { !store.hiddenVolumes.contains(volume.key) },
+                    Toggle(volume.name, isOn: Binding(get: { store.hiddenVolumes.contains(volume.key) },
                                                       set: { _ in store.toggleHidden(volume) }))
                 }
             } header: {
-                Text("Mounted volumes")
+                Text("Hidden volumes")
             } footer: {
-                Text("Unchecked volumes, such as master drives, are hidden from the island and the menu. Disk images are never listed.")
+                Text("Switch on the volumes to hide from the island and the menu, such as master drives. Lists the mounted volumes; disk images are never shown.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Notifications") {

@@ -8,7 +8,7 @@ Open the DMG and drag Backup Monitor to Applications. Apple Silicon and Intel, m
 
 ## Island
 
-On a MacBook with a notch, the island grows out of the notch while a job runs and stays hidden otherwise. Without a notch it drops from the top centre of the screen (off by default there, see Settings). Hover it for details, queued jobs, recently completed jobs, mounted volumes, Settings and Quit. Edit, beside the Mounted volumes heading, hides volumes such as master drives; Settings has the same list as switches. Mounted disk images (DMGs) are never listed. A green tick means every file now on the volume was copied by a successful Silverstack job, a blue tick that every clip on it has also been transcoded.
+On a MacBook with a notch, the island grows out of the notch while a job runs and stays hidden otherwise. Without a notch it drops from the top centre of the screen (off by default there, see Settings). Hover it for details, queued jobs, recently completed jobs, mounted volumes, Settings and Quit. Edit, beside the Mounted volumes heading, hides volumes such as master drives; Hidden volumes in Settings has the same list as switches. Mounted disk images (DMGs) are never listed. A green tick means every file now on the volume was copied by a successful Silverstack job, a blue tick that every clip on it has also been transcoded.
 
 ## Menu bar
 
@@ -18,7 +18,7 @@ While a job runs the icon can show its percentage, speed, time remaining, the nu
 
 Each card being copied is checked on its own, on its real speed: the size of each file read from it over the time its copy phase took (until verify starts, or until the file is done when there is no verify). This is lower than the speed Silverstack shows, which overstated real throughput by about half on test offloads. A file still copying can only be as fast as its size over the time so far, so a long clip that is clearly too slow is caught before it ends. After 30 seconds of copying, under the minimum for its group, the job turns orange with for example `Slow: 208 MB/s (min 500) · A015CAZH`, the menu bar readout turns orange and a notification is sent. Copy phase only.
 
-A card's group comes from the entries in Settings, separated by commas: a single letter is a camera letter, the first letter of reel-style names like `A015CAZH` or `D902_261103` (the names Card Rename gives); anything longer is a full card name. Defaults, all editable:
+A card's group comes from the entries in Settings, separated by commas: a single letter is a camera letter, the first letter of reel-style names like `A015CAZH` or `D902_261103` (the names Card Rename gives); anything longer matches the start of a card name, so `CANTAR_SD` also covers `CANTAR_SD_2`. Defaults, all editable:
 
 | Group | Entries | Minimum |
 | --- | --- | --- |

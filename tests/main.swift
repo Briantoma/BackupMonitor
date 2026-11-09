@@ -288,6 +288,7 @@ var rules = CardRules.standard
 check(rules.group(of: "A015CAZH"), .camera, "reel name is a camera card")
 check(rules.group(of: "CANTAR_SD"), .audio, "full name is audio")
 check(rules.group(of: "cantar_sd"), .audio, "names ignore case")
+check(rules.group(of: "CANTAR_SD_2"), .audio, "names match the start")
 check(rules.group(of: "A6MT3_20TB"), .other, "drive name is other")
 check(rules.group(of: "DJI"), .other, "short name is other")
 check(rules.group(of: "K001"), .other, "unassigned letter is other")
