@@ -1,6 +1,6 @@
 # Backup Monitor
 
-**[Download Backup Monitor (DMG)](https://github.com/Oz-Color/BackupMonitor/releases/latest/download/BackupMonitor.dmg)** · [all releases](https://github.com/Oz-Color/BackupMonitor/releases)
+**[Download Backup Monitor (DMG)](https://github.com/Briantoma/BackupMonitor/releases/latest/download/BackupMonitor.dmg)** · [all releases](https://github.com/Briantoma/BackupMonitor/releases)
 
 Follows Silverstack offload, verify and transcode progress at the top of the screen and in the menu bar, and warns when a card copies too slowly. For Silverstack XT and Silverstack Lab; Offload Manager is not supported. Not affiliated with Pomfort. Original idea from Joe Jamieson.
 

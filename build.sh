@@ -2,9 +2,25 @@
 # Builds Backup Monitor.app with the Command Line Tools (no Xcode needed). Runs the tests first.
 #   ./build.sh           build into build/
 #   ./build.sh install   build, copy to /Applications and open it
+#   ./build.sh icon      redraw Resources/AppIcon.icns from tools/make_icon.swift
 #   ./build.sh dmg       build, then build/BackupMonitor.dmg (app + Applications shortcut) for a GitHub release
 set -euo pipefail
 cd "${0:A:h}"
+
+if [ "${1:-}" = "icon" ]; then
+  mkdir -p build
+  swiftc tools/make_icon.swift -o build/make_icon
+  ./build/make_icon build/icon_1024.png
+  /bin/rm -rf build/AppIcon.iconset
+  mkdir build/AppIcon.iconset
+  for s in 16 32 128 256 512; do
+    sips -z $s $s build/icon_1024.png --out "build/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s * 2)) $((s * 2)) build/icon_1024.png --out "build/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
+  echo "Wrote Resources/AppIcon.icns"
+  exit
+fi
 
 mkdir -p build
 swiftc -O Sources/Core.swift tests/main.swift -o build/tests

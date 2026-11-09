@@ -1,4 +1,4 @@
-// Draws the app icon: SS inside a progress ring, on a dark tile.
+// Draws the app icon: a stack of three drives inside a progress ring, on a dark tile.
 // Usage: swift tools/make_icon.swift out.png   (1024 x 1024)
 import AppKit
 
@@ -43,14 +43,18 @@ let progress = CGGradient(colorsSpace: nil, colors: [color(0x5AC8FA), color(0x0A
 context.drawLinearGradient(progress, start: CGPoint(x: 800, y: 800), end: CGPoint(x: 220, y: 240), options: [])
 context.restoreGState()
 
-let graphics = NSGraphicsContext(cgContext: context, flipped: false)
-NSGraphicsContext.current = graphics
-let font = NSFont.systemFont(ofSize: 300, weight: .heavy)
-let text = NSAttributedString(string: "SS", attributes: [
-    .font: font, .foregroundColor: NSColor.white, .kern: -10,
-])
-let bounds = text.size()
-text.draw(at: NSPoint(x: 512 - bounds.width / 2 + 2, y: 512 - bounds.height / 2 + 4))
+// Back drive on top, front drive lightest at the bottom; the front one's light is green.
+let drive = CGSize(width: 326, height: 88)
+let gap: CGFloat = 20
+for (index, shade) in [0x8A8F98, 0xB9BDC4, 0xE4E6EA].enumerated() {
+    let y = 512 + (drive.height + gap) * (1 - CGFloat(index)) - drive.height / 2
+    let body = CGRect(x: 512 - drive.width / 2, y: y, width: drive.width, height: drive.height)
+    context.setFillColor(color(UInt32(shade)))
+    context.addPath(CGPath(roundedRect: body, cornerWidth: 26, cornerHeight: 26, transform: nil))
+    context.fillPath()
+    context.setFillColor(index == 2 ? color(0x30D158) : color(0x23262B))
+    context.fillEllipse(in: CGRect(x: body.maxX - 66, y: body.midY - 12, width: 24, height: 24))
+}
 
 let image = context.makeImage()!
 let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!

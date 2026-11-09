@@ -6,7 +6,7 @@ import UserNotifications
 @MainActor
 final class Updater: ObservableObject {
     static let shared = Updater()
-    static let latestRelease = URL(string: "https://api.github.com/repos/Oz-Color/BackupMonitor/releases/latest")!
+    static let latestRelease = URL(string: "https://api.github.com/repos/Briantoma/BackupMonitor/releases/latest")!
 
     struct Release: Equatable {
         let version: String
