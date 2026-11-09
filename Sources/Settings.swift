@@ -174,10 +174,10 @@ struct SettingsView: View {
                     }
                 }
             } header: {
-                Text("Slow copy warning")
-            } footer: {
-                Text("Separate entries with commas. A single letter is a camera letter, the first letter of names like A015CAZH or D902_261103; anything longer matches the start of a card name. Warns once a card's real copy speed, from file sizes and copy times, is under its minimum.")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text("Slow copy warning")
+                    InfoButton("Separate entries with commas. A single letter is a camera letter, the first letter of names like A015CAZH or D902_261103; anything longer matches the start of a card name. Warns once a card's real copy speed, from file sizes and copy times, is under its minimum.")
+                }
             }
             Section {
                 if store.volumes.isEmpty {
@@ -188,10 +188,10 @@ struct SettingsView: View {
                                                       set: { _ in store.toggleHidden(volume) }))
                 }
             } header: {
-                Text("Hidden volumes")
-            } footer: {
-                Text("Switch on the volumes to hide from the island and the menu, such as master drives. Lists the mounted volumes; disk images are never shown.")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text("Hidden volumes")
+                    InfoButton("Switch on the volumes to hide from the island and the menu, such as master drives. Lists the mounted volumes; disk images are never shown.")
+                }
             }
             Section("Notifications") {
                 Toggle("Slow copy", isOn: $prefs.notifySlow)
