@@ -17,10 +17,6 @@ On a MacBook with a notch, the island grows out of the notch while a job runs an
 
 ## Menu bar
 
-<p align="center">
-  <img src="docs/settings.png" width="360" alt="Settings: what to show, slow copy minimums per card group, hidden volumes, notifications and updates">
-</p>
-
 <p align="center"><img src="docs/menubar.png" width="300" alt="Menu bar readout: progress wheel, 92%, 3.21 GB/s, 6s left"></p>
 
 While a job runs the icon can show its percentage, speed, time remaining, the number of jobs and a progress wheel, in any mix (chosen in Settings). The menu lists mounted volumes, Settings, About and Quit.
@@ -38,6 +34,10 @@ A card's group comes from the entries in Settings, separated by commas: a single
 | Other sources | everything else, such as `SSD_01` or `DJI` | 150 MB/s |
 
 ## Settings
+
+<p align="center">
+  <img src="docs/settings.png" width="360" alt="Settings: what to show, slow copy minimums per card group, hidden volumes, notifications and updates">
+</p>
 
 Island and menu bar icon on or off (one of them always stays on), menu bar readouts, entries and minimum speed per group, mounted volumes to hide, notifications (slow copy on by default; job finished, failed or stopped and unreadable logs off, as Silverstack has its own), Open at Login, Show Demo, version and About. Settings opens on first launch, and whenever the app is opened again from Finder or Applications, which is the way back when the icon is hidden. While Settings or About is open, the app shows in the Dock and Cmd-Tab.
 
