@@ -1,3 +1,4 @@
 .build/
-Silverstack Island.app/
+build/
+*.app/
 .DS_Store

@@ -15,6 +15,8 @@ struct JobInfo: Equatable {
     var totalTasks: Int
     var alreadyDoneBytes: Double
     var alreadyDoneTasks: Int
+    /// The volume each file is copied from, under both spellings like sizes.
+    var sources: [String: String] = [:]
     private var counts: [String: Int] = [:]
 
     init(title: String = "", sizes: [String: Double] = [:], totalBytes: Double = 0, totalTasks: Int = 0,
@@ -27,7 +29,7 @@ struct JobInfo: Equatable {
         self.alreadyDoneTasks = alreadyDoneTasks
     }
 
-    mutating func add(name: String, size: Double, isDone: Bool) {
+    mutating func add(name: String, size: Double, isDone: Bool, source: String? = nil) {
         totalBytes += size
         totalTasks += 1
         if isDone {
@@ -37,6 +39,10 @@ struct JobInfo: Equatable {
         remember(name, size)
         let stem = (name as NSString).deletingPathExtension
         if stem != name { remember(stem, size) }
+        if let source {
+            sources[name] = source
+            sources[stem] = source
+        }
     }
 
     /// Averages repeated names: the log can't say which of them a line means, but the
@@ -66,6 +72,9 @@ struct Job: Identifiable {
     var active: [String: Double] = [:]
     var phase: String?
     var speed: String?
+    /// Latest copy-phase speed of each file in flight, in bytes per second.
+    var copySpeeds: [String: (bytesPerSecond: Double, at: Date)] = [:]
+    var filePhases: [String: String] = [:]
     var currentFile: String?
     var errors = 0
     var lastError: String?
@@ -139,6 +148,8 @@ final class Tracker {
     private var pendingWorkflow: String?
     private var workflowNames: [String: String] = [:]
     private var declaredJobs: [String] = []
+    /// Job lines this parser no longer understands: a sign Silverstack changed its log format.
+    private(set) var unrecognised = 0
 
     private static let dates: DateFormatter = {
         let formatter = DateFormatter()
@@ -146,10 +157,11 @@ final class Tracker {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSZ"
         return formatter
     }()
-    private static let transition = pattern(#"x-coredata://([^ ]*/(\w+)Job/\w+) com\.pomfort\.workState\.(\w+) -> com\.pomfort\.workState\.(\w+)"#)
+    private static let transition = pattern(#"x-coredata://([^ ]*/(\w+)Job/[\w-]+) com\.pomfort\.workState\.(\w+) -> com\.pomfort\.workState\.(\w+)"#)
     private static let taskLine = pattern(#"(MSG|FIN|ERR): \w+TaskExecution <(.*?)>(?: |$)(.*)$"#)
     private static let progress = pattern(#"\[prog\s*\] (\d+)%"#)
     private static let speed = pattern(#"\[spd\s*\] ([\d.]+ \w+)"#)
+    private static let exactSpeed = pattern(#"\(([\d,.]+) bytes\)/s"#)
     private static let phase = pattern(#"\[info\s*\] (\w+)"#)
     private static let errorText = pattern(#"Code=-?\d+ "(.*?)" UserInfo"#)
     private static let quoted = pattern(#""([^"]+)""#)
@@ -181,7 +193,10 @@ final class Tracker {
             }
             return
         }
-        guard let tag = Self.tag(in: line) else { return }
+        guard let tag = Self.tag(in: line) else {
+            if Self.isTaskMessage(line) { unrecognised += 1 }
+            return
+        }
         if line.contains("tasks will be executed in the following buckets") {
             declaredJobs.append(tag)
         } else if line.contains("TaskExecution <") {
@@ -204,8 +219,15 @@ final class Tracker {
         return dates.date(from: String(line.dropFirst(2).prefix(28)))
     }
 
+    private static func isTaskMessage(_ line: String) -> Bool {
+        line.contains("TaskExecution <") && (line.contains("MSG: ") || line.contains("FIN: ") || line.contains("ERR: "))
+    }
+
     private func handleTransition(_ line: String) {
-        guard let parts = Self.groups(Self.transition, line) else { return }
+        guard let parts = Self.groups(Self.transition, line) else {
+            if line.contains("state transition") { unrecognised += 1 }
+            return
+        }
         let url = "x-coredata://" + parts[1], kind = parts[2], from = parts[3], to = parts[4]
         let date = Self.date(line) ?? Date()
 
@@ -239,10 +261,18 @@ final class Tracker {
     }
 
     private func handleTask(_ line: String, jobID: String) {
-        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
-              let parts = Self.groups(Self.taskLine, line) else { return }
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        guard let parts = Self.groups(Self.taskLine, line) else {
+            if Self.isTaskMessage(line) { unrecognised += 1 }
+            return
+        }
         let verb = parts[1], name = parts[2], rest = parts[3]
-        if let date = Self.date(line) { jobs[index].lastActivity = date }
+        let date = Self.date(line)
+        if let date { jobs[index].lastActivity = date }
+        if verb != "MSG" {
+            jobs[index].copySpeeds[name] = nil
+            jobs[index].filePhases[name] = nil
+        }
 
         switch verb {
         case "FIN":
@@ -259,9 +289,16 @@ final class Tracker {
                !jobs[index].finishedNames.contains(name) {
                 jobs[index].active[name] = percent / 100
             }
-            if let phase = Self.groups(Self.phase, rest)?[1] { jobs[index].phase = phase }
+            if let phase = Self.groups(Self.phase, rest)?[1] {
+                jobs[index].phase = phase
+                jobs[index].filePhases[name] = phase
+            }
             if let speed = Self.groups(Self.speed, rest)?[1] {
                 jobs[index].speed = speed.hasSuffix("FPS") ? speed : speed + "/s"
+            }
+            if jobs[index].filePhases[name] == "copy", let date,
+               let exact = Self.groups(Self.exactSpeed, rest).flatMap({ Double($0[1].replacingOccurrences(of: ",", with: "")) }) {
+                jobs[index].copySpeeds[name] = (exact, date)
             }
         }
     }
@@ -462,5 +499,96 @@ enum MenuBarStatus {
             parts.append("\(count) job\(count == 1 ? "" : "s")")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+enum CardGroup: String, CaseIterable {
+    case camera, audio, other
+
+    var label: String {
+        switch self {
+        case .camera: return "Camera cards"
+        case .audio: return "Audio cards"
+        case .other: return "Other sources"
+        }
+    }
+}
+
+/// Which camera letters belong to which group, and each group's minimum copy speed in MB/s.
+struct CardRules: Equatable {
+    var letters: [CardGroup: String]
+    var minimum: [CardGroup: Double]
+
+    static let standard = CardRules(letters: [.camera: "ABCDEFGH", .audio: "S"],
+                                    minimum: [.camera: 500, .audio: 40, .other: 150])
+
+    /// The camera letter is the first letter of a reel-style name: A015CAZH, D902_261103, E004.
+    /// Anything else (SSD_01, DJI, A6MT3_20TB) is another source.
+    func group(of volume: String) -> CardGroup {
+        let start = Array(volume.prefix(4))
+        guard start.count == 4, start[0].isASCII, start[0].isLetter,
+              start.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return .other }
+        let letter = start[0].uppercased()
+        if letters[.camera, default: ""].contains(letter) { return .camera }
+        if letters[.audio, default: ""].contains(letter) { return .audio }
+        return .other
+    }
+
+    /// Keeps letters only, upper case, once, and takes them away from the other group.
+    mutating func setLetters(_ text: String, for group: CardGroup) {
+        var seen = Set<Character>()
+        let clean = String(text.uppercased().filter { $0.isASCII && $0.isLetter && seen.insert($0).inserted })
+        letters[group] = clean
+        for other in [CardGroup.camera, .audio] where other != group {
+            letters[other] = letters[other, default: ""].filter { !clean.contains($0) }
+        }
+    }
+}
+
+struct SlowCard: Equatable {
+    var jobID: String
+    var card: String
+    var group: CardGroup
+    var speed: Double
+    var minimum: Double
+
+    var key: String { "\(jobID)|\(card)" }
+    var text: String { "Slow: \(Int(speed)) MB/s (min \(Int(minimum))) · \(card)" }
+}
+
+/// Averages each card's copy speed over the last 30 seconds, so a dip at the start of a clip
+/// or on a small sidecar file never warns.
+final class SpeedWatch {
+    static let window: TimeInterval = 30
+    static let fresh: TimeInterval = 2
+    private var samples: [String: [(at: Date, mbps: Double)]] = [:]
+
+    func update(jobs: [Job], rules: CardRules, now: Date) -> [SlowCard] {
+        var slow: [SlowCard] = []
+        var live = Set<String>()
+        for job in jobs where !job.state.isFinished {
+            guard let info = job.info else { continue }
+            // Files copying from the same card add up, as Silverstack can read several at once.
+            var perCard: [String: Double] = [:]
+            for (name, sample) in job.copySpeeds where now.timeIntervalSince(sample.at) <= Self.fresh {
+                guard let card = info.sources[name] else { continue }
+                perCard[card, default: 0] += sample.bytesPerSecond / 1e6
+            }
+            for (card, mbps) in perCard {
+                let key = "\(job.id)|\(card)"
+                live.insert(key)
+                var history = samples[key, default: []].filter { now.timeIntervalSince($0.at) <= Self.window }
+                history.append((now, mbps))
+                samples[key] = history
+                let average = history.map(\.mbps).reduce(0, +) / Double(history.count)
+                let group = rules.group(of: card)
+                let minimum = rules.minimum[group] ?? 0
+                guard let first = history.first, now.timeIntervalSince(first.at) >= Self.window * 0.8,
+                      average < minimum else { continue }
+                slow.append(SlowCard(jobID: job.id, card: card, group: group, speed: average, minimum: minimum))
+            }
+        }
+        samples = samples.filter { live.contains($0.key) }
+        return slow.sorted { $0.key < $1.key }
     }
 }

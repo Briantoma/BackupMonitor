@@ -281,4 +281,51 @@ check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining
       "25% · 5m 0s · 2 jobs", "every readout")
 check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job", "singular")
 
+// Card groups come from the camera letter of reel-style names; letters belong to one group.
+var rules = CardRules.standard
+check(rules.group(of: "A015CAZH"), .camera, "reel name is a camera card")
+check(rules.group(of: "S004_261103"), .audio, "S is audio")
+check(rules.group(of: "A6MT3_20TB"), .other, "drive name is other")
+check(rules.group(of: "DJI"), .other, "short name is other")
+check(rules.group(of: "K001"), .other, "unassigned letter is other")
+rules.setLetters("as a", for: .audio)
+check(rules.letters[.audio], "AS", "letters cleaned")
+check(rules.letters[.camera], "BCDEFGH", "moved letter leaves the other group")
+
+// Copy-phase speeds are read per file and summed per source card over 30 seconds.
+func speedLine(_ second: Int, _ file: String, _ bytes: String) -> String {
+    "I \(stamp(second)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <\(file)> [prog ] 5% [spd  ] 1 MB (\(bytes) bytes)/s"
+}
+tracker = Tracker()
+started(tracker)
+var sourced = JobInfo(title: "REEL")
+sourced.add(name: "a.MP4", size: 90, isDone: false, source: "A015CAZH")
+sourced.add(name: "b.LRF", size: 10, isDone: false, source: "A015CAZH")
+tracker.setInfo(sourced, forJob: "Z2z.dij")
+tracker.ingest(speedLine(2, "a.MP4", "999,000,000.5"))
+check(tracker.jobs[0].copySpeeds.isEmpty, true, "no speed before the copy phase")
+tracker.ingest("I \(stamp(2)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <a.MP4> [info ] copy [prog ] 0%")
+tracker.ingest("I \(stamp(2)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <b.LRF> [info ] copy [prog ] 0%")
+check(tracker.unrecognised, 0, "known lines are recognised")
+let logDates = DateFormatter()
+logDates.locale = Locale(identifier: "en_US_POSIX")
+logDates.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSZ"
+let start = logDates.date(from: stamp(3))!
+let watch = SpeedWatch()
+for second in 3...40 {
+    tracker.ingest(speedLine(second, "a.MP4", "200,000,000.0"))
+    tracker.ingest(speedLine(second, "b.LRF", "100,000,000.0"))
+    let slow = watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(Double(second - 3)))
+    if second < 27 { check(slow.isEmpty, true, "no warning before 24 s of history (\(second))") }
+}
+let slow = watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(37))
+check(slow.map(\.text), ["Slow: 300 MB/s (min 500) · A015CAZH"], "files of one card add up")
+var lenient = CardRules.standard
+lenient.minimum[.camera] = 250
+check(watch.update(jobs: tracker.jobs, rules: lenient, now: start.addingTimeInterval(37)).isEmpty, true, "above minimum")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(60)).isEmpty, true, "stale speeds stop")
+tracker.ingest("I \(stamp(41)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <a.MP4 garbled")
+tracker.ingest("I \(stamp(41)) <JBSTE> [1] state transition: something new")
+check(tracker.unrecognised, 2, "changed format is counted")
+
 if failures == 0 { print("All tests passed") } else { exit(1) }

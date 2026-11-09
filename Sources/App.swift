@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import Combine
+import UserNotifications
 
 @main
 enum Main {
@@ -77,6 +78,8 @@ final class Store: ObservableObject {
     @Published var isHovering = false
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var now = Date()
+    @Published var slow: [SlowCard] = []
+    @Published var logProblem: String?
 
     private var sources: [LogSource] = []
     private var timer: Timer?
@@ -84,6 +87,9 @@ final class Store: ObservableObject {
     private let scanQueue = DispatchQueue(label: "volume-scan")
     private var isScanning = false
     private var scanAgain = false
+    private let speedWatch = SpeedWatch()
+    private var notifiedSlow = Set<String>()
+    private var seenFinished = Set<String>()
 
     var shown: [Job] { demoJobs ?? jobs }
     /// Finished jobs newest first, leaving out any still on show as a live row.
@@ -96,13 +102,7 @@ final class Store: ObservableObject {
     var primary: Job? { running.first { !$0.state.isFinished } ?? queued.first ?? shown.last }
 
     func start() {
-        let root = Testing.logRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
-        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        sources = folders.filter { $0.lastPathComponent.hasPrefix("Silverstack ") }.map(LogSource.init)
-        for source in sources {
-            source.follower.readRecent().forEach(source.tracker.ingest)
-            source.tracker.pruneAfterScan(silverstackStarted: silverstackStarted)
-        }
+        findSources()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         tick()
         let workspace = NSWorkspace.shared.notificationCenter
@@ -111,6 +111,21 @@ final class Store: ObservableObject {
         }
         refreshVolumes()
     }
+
+    /// Looked for again while none is found, as Silverstack makes its log folder on first launch.
+    private func findSources() {
+        let root = Testing.logRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        sources = folders.filter { $0.lastPathComponent.hasPrefix("Silverstack ") }.map(LogSource.init)
+        for source in sources {
+            source.follower.readRecent().forEach(source.tracker.ingest)
+            source.tracker.pruneAfterScan(silverstackStarted: silverstackStarted)
+        }
+        // Only jobs ending from now on are announced.
+        seenFinished.formUnion(sources.flatMap(\.tracker.recent).map(\.id))
+    }
+
+    func slowCard(_ job: Job) -> SlowCard? { slow.first { $0.jobID == job.id } }
 
     /// Runs one scan at a time, off the main thread, as cards can be slow to read.
     func refreshVolumes() {
@@ -152,6 +167,7 @@ final class Store: ObservableObject {
         // Nothing on screen needs the clock, so leave the view alone between jobs.
         if !shown.isEmpty || isHovering { now = Date() }
         let running = silverstackIsRunning
+        if sources.isEmpty && running { findSources() }
         for source in sources {
             source.follower.readNew().forEach(source.tracker.ingest)
             // A job can't be progressing once the app has gone; a crash writes no end state.
@@ -161,13 +177,34 @@ final class Store: ObservableObject {
         }
         let combined = sources.flatMap(\.tracker.jobs)
         if combined.map(\.signature) != jobs.map(\.signature) { jobs = combined }
+        let prefs = Preferences.shared
+        let nowSlow = speedWatch.update(jobs: combined, rules: prefs.rules, now: Date())
+        if nowSlow != slow { slow = nowSlow }
+        for card in nowSlow where notifiedSlow.insert(card.key).inserted && prefs.notifySlow {
+            Notifier.post(id: "slow-\(card.key)", title: "Slow copy: \(card.card)",
+                          body: "\(Int(card.speed)) MB/s, under the \(Int(card.minimum)) MB/s minimum for \(card.group.label.lowercased()).")
+        }
+        let problem: String? = !running ? nil
+            : sources.isEmpty ? "Silverstack is running but its log folder can't be found"
+            : sources.map(\.tracker.unrecognised).reduce(0, +) > 50 ? "Silverstack's log has changed: progress may be missing"
+            : nil
+        if problem != logProblem {
+            logProblem = problem
+            if let problem, prefs.notifyLogs { Notifier.post(id: "logs", title: "Backup Monitor can't follow Silverstack", body: problem) }
+        }
         let finished = sources.flatMap(\.tracker.recent).sorted { $0.endedAt ?? .distantPast > $1.endedAt ?? .distantPast }
         if finished.map(\.signature) != recentJobs.map(\.signature) {
+            for job in finished where seenFinished.insert(job.id).inserted && prefs.notifyJobs { announce(job) }
             recentJobs = finished
             refreshVolumes()
             // The log can get ahead of the database saving the job as finished.
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in self?.refreshVolumes() }
         }
+    }
+
+    private func announce(_ job: Job) {
+        let outcome = job.state == .succeeded ? "finished" : job.state == .failed ? "failed" : "stopped"
+        Notifier.post(id: "end-\(job.id)", title: "\(job.kindLabel) \(outcome)", body: job.title, alarm: job.state != .succeeded)
     }
 
     private func lookUpSizes(_ source: LogSource) {
@@ -244,6 +281,16 @@ final class Store: ObservableObject {
     }
 }
 
+enum Notifier {
+    static func post(id: String, title: String, body: String, alarm: Bool = false) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if alarm { content.sound = .default }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+    }
+}
+
 extension Job {
     /// Enough to tell whether the island needs redrawing.
     var signature: String {
@@ -258,9 +305,10 @@ struct IslandMetrics {
     var expandedWidth: CGFloat = 460
     var collapsedWidth: CGFloat { notchWidth + earWidth * 2 }
 
-    static func expandedHeight(running: Int, queued: Int, recent: Int, volumes: Int?, hovering: Bool, top: CGFloat) -> CGFloat {
+    static func expandedHeight(running: Int, queued: Int, recent: Int, volumes: Int?, hovering: Bool, warning: Bool,
+                               top: CGFloat) -> CGFloat {
         func list(_ rows: Int) -> CGFloat { rows > 0 ? 26 + CGFloat(rows) * 26 : 0 }
-        let controls: CGFloat = hovering ? 34 : 0
+        let controls: CGFloat = hovering ? 34 + (warning ? 34 : 0) : 0
         let volumeHeight = volumes.map { 26 + CGFloat($0) * 26 } ?? 0
         return top + 8 + CGFloat(min(running, 3)) * 92 + list(queued) + list(recent) + volumeHeight + controls + 12
     }
@@ -296,7 +344,7 @@ struct IslandView: View {
         case .failed: return .red
         case .paused, .cancelled: return .orange
         default:
-            if isSilent(job) || job.errors > 0 { return .orange }
+            if isSilent(job) || job.errors > 0 || store.slowCard(job) != nil { return .orange }
             return job.phase == "verify" ? .cyan : .blue
         }
     }
@@ -352,6 +400,11 @@ struct IslandView: View {
             ForEach(store.running.prefix(3)) { row($0).frame(height: 84) }
             if !store.queued.isEmpty { queuedList }
             if store.isHovering {
+                if let problem = store.logProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(.orange)
+                        .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                }
                 if !store.recent.isEmpty { recentList }
                 if !store.volumes.isEmpty { volumeList }
                 controls
@@ -414,7 +467,7 @@ struct IslandView: View {
     private var controls: some View {
         HStack(spacing: 16) {
             Button("Show Demo") { store.runDemo() }
-            Button(store.opensAtLogin ? "✓ Open at Login" : "Open at Login") { store.toggleLogin() }
+            Button("Settings…") { SettingsWindow.show(store: store) }
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
         }
@@ -531,7 +584,7 @@ struct IslandView: View {
             Text(detailLine(job)).font(.system(size: 11.5).monospacedDigit())
                 .foregroundColor(.white.opacity(0.72)).lineLimit(1)
             Text(fileLine(job)).font(.system(size: 11.5))
-                .foregroundColor(job.lastError == nil ? .white.opacity(0.5) : .orange)
+                .foregroundColor(job.lastError == nil && store.slowCard(job) == nil ? .white.opacity(0.5) : .orange)
                 .lineLimit(1).truncationMode(.middle)
         }
     }
@@ -552,6 +605,7 @@ struct IslandView: View {
 
     private func fileLine(_ job: Job) -> String {
         if let error = job.lastError { return "\(job.errors) error\(job.errors == 1 ? "" : "s"): \(error)" }
+        if let slow = store.slowCard(job) { return slow.text }
         if isSilent(job) {
             return "No update for \(Format.duration(store.now.timeIntervalSince(job.lastActivity)))"
         }
@@ -570,8 +624,13 @@ final class IslandPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     private let store = Store()
+    private let prefs = Preferences.shared
+    private var prefsUpdates: Any?
+    private var menuUpdates: Any?
+    private var updateUpdates: Any?
     private var panel: IslandPanel!
     private var statusItem: NSStatusItem!
     private var metrics = IslandMetrics(notchWidth: 190, height: 37)
@@ -581,10 +640,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hiddenUpdates: Any?
     private let menu = NSMenu()
     private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
-    private var menuBarOptions = MenuBarOptions(rawValue: UserDefaults.standard.object(forKey: "menuBarOptions") as? Int
-                                                ?? MenuBarOptions([.percent, .wheel]).rawValue)
     private static let idleIcon = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
-                                          accessibilityDescription: "Silverstack Island")
+                                          accessibilityDescription: "Backup Monitor")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         metrics = Self.measure(Self.screen)
@@ -609,12 +666,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         volumeUpdates = store.$volumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
         hiddenUpdates = store.$hiddenVolumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
+        menuUpdates = store.$logProblem.removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
+        updateUpdates = Updater.shared.$available.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
+        prefsUpdates = prefs.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.statusItem.isVisible = self.prefs.showMenuBar
+                self.layoutPanel()
+                self.updateStatusItem()
+                self.rebuildMenu()
+            }
+        }
+        UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        Updater.shared.start()
         store.start()
         layoutPanel()
         // Reads the cursor directly: a panel that never activates doesn't reliably get hover events.
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.updateHover()
+            MainActor.assumeIsolated { self?.updateHover() }
         }
+        if !UserDefaults.standard.bool(forKey: "launchedBefore") {
+            UserDefaults.standard.set(true, forKey: "launchedBefore")
+            SettingsWindow.show(store: store)
+        }
+    }
+
+    /// Opening the app again from Finder is the way back in when its icon is hidden.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        SettingsWindow.show(store: store)
+        return false
+    }
+
+    /// Shows banners even while the Settings window has the app in front.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 
     /// The notched display if there is one, otherwise the display with the menu bar.
@@ -638,6 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateHover() {
+        guard prefs.showIsland else {
+            if store.isHovering { store.isHovering = false }
+            return
+        }
         // While hidden the notch itself is the target, so the island can be opened between
         // jobs without menu bar items beside it setting it off. Grown slightly because the
         // cursor can rest on the very top edge of the screen.
@@ -662,7 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func layoutPanel() {
         let jobs = store.shown
         let recent = store.isHovering ? store.recent.count : 0
-        guard !jobs.isEmpty || store.isHovering else {
+        guard prefs.showIsland, !jobs.isEmpty || store.isHovering else {
             panel.orderOut(nil)
             return
         }
@@ -672,7 +763,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                      height: IslandMetrics.expandedHeight(running: store.running.count, queued: store.queued.count,
                                                           recent: recent,
                                                           volumes: store.isHovering && !store.volumes.isEmpty ? store.listedVolumes.count : nil,
-                                                          hovering: store.isHovering, top: metrics.height))
+                                                          hovering: store.isHovering, warning: store.logProblem != nil,
+                                                          top: metrics.height))
             : NSSize(width: metrics.collapsedWidth, height: metrics.height)
         let frame = topCentered(size)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
@@ -682,7 +774,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setUpMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.imagePosition = .imageLeading
-        statusItem.button?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        statusItem.autosaveName = "BackupMonitor"
+        statusItem.isVisible = prefs.showMenuBar
         updateStatusItem()
         loginItem.target = self
         menu.delegate = self
@@ -694,6 +787,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func rebuildMenu() {
         menu.removeAllItems()
+        if let update = Updater.shared.available {
+            menu.addItem(withTitle: "Download Backup Monitor \(update.version)…", action: #selector(downloadUpdate), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+        }
+        if let problem = store.logProblem {
+            let warning = menu.addItem(withTitle: problem, action: nil, keyEquivalent: "")
+            warning.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
+            warning.isEnabled = false
+            menu.addItem(.separator())
+        }
         let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")
         header.isEnabled = false
         if store.visibleVolumes.isEmpty {
@@ -717,14 +820,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let choice = options.addItem(withTitle: title, action: #selector(toggleMenuBarOption), keyEquivalent: "")
             choice.target = self
             choice.tag = option.rawValue
-            choice.state = menuBarOptions.contains(option) ? .on : .off
+            choice.state = prefs.menuBarOptions.contains(option) ? .on : .off
         }
         display.submenu = options
         menu.addItem(withTitle: "Show Demo", action: #selector(showDemo), keyEquivalent: "").target = self
         loginItem.state = store.opensAtLogin ? .on : .off
         menu.addItem(loginItem)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Silverstack Island", action: #selector(NSApplication.terminate), keyEquivalent: "q")
+        menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: "About Backup Monitor", action: #selector(showAbout), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Quit Backup Monitor", action: #selector(NSApplication.terminate), keyEquivalent: "q")
     }
 
     private func item(for volume: VolumeStatus) -> NSMenuItem {
@@ -773,22 +878,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showDemo() { store.runDemo() }
 
+    @objc private func showSettings() { SettingsWindow.show(store: store) }
+
+    @objc private func showAbout() { About.show() }
+
+    @objc private func downloadUpdate() { Updater.shared.download() }
+
     @objc private func toggleMenuBarOption(_ item: NSMenuItem) {
         let option = MenuBarOptions(rawValue: item.tag)
-        if menuBarOptions.contains(option) { menuBarOptions.remove(option) } else { menuBarOptions.insert(option) }
-        UserDefaults.standard.set(menuBarOptions.rawValue, forKey: "menuBarOptions")
-        item.state = menuBarOptions.contains(option) ? .on : .off
-        updateStatusItem()
+        if prefs.menuBarOptions.contains(option) { prefs.menuBarOptions.remove(option) } else { prefs.menuBarOptions.insert(option) }
     }
 
     /// The drive icon between jobs, the chosen readouts while one runs.
     private func updateStatusItem() {
         guard let button = statusItem?.button else { return }
         let jobs = store.shown
-        let text = MenuBarStatus.text(for: jobs, options: menuBarOptions, now: Date())
+        let text = MenuBarStatus.text(for: jobs, options: prefs.menuBarOptions, now: Date())
         let job = MenuBarStatus.active(jobs)
-        let image = job != nil && menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
-        if button.title != text { button.title = text }
+        let image = job != nil && prefs.menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
+        let tint: NSColor? = store.slow.isEmpty ? nil : .systemOrange
+        if button.title != text || button.contentTintColor != tint {
+            var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)]
+            if let tint { attributes[.foregroundColor] = tint }
+            button.attributedTitle = NSAttributedString(string: text, attributes: attributes)
+            button.contentTintColor = tint
+        }
         if button.image !== image { button.image = image }
     }
 

@@ -3,8 +3,8 @@ import SQLite3
 
 /// Points the app at recorded logs and a copy of a project, for replaying a job.
 enum Testing {
-    static let logRoot = folder("ISLAND_LOG_ROOT")
-    static let dataRoot = folder("ISLAND_DATA_ROOT")
+    static let logRoot = folder("MONITOR_LOG_ROOT")
+    static let dataRoot = folder("MONITOR_DATA_ROOT")
 
     private static func folder(_ name: String) -> URL? {
         ProcessInfo.processInfo.environment[name].map { URL(fileURLWithPath: $0) }
@@ -135,8 +135,11 @@ enum ProjectDatabase {
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         let query = """
-            select t.ZNAME, t.ZSIZE, t.ZEXECUTIONSTATUS, j.ZNAME
-            from ZACTIVITYTASK t join ZACTIVITYJOB j on j.Z_PK = t.ZJOB where t.ZJOB = ?
+            select t.ZNAME, t.ZSIZE, t.ZEXECUTIONSTATUS, j.ZNAME, v.ZLABEL
+            from ZACTIVITYTASK t join ZACTIVITYJOB j on j.Z_PK = t.ZJOB
+            left join ZVIDEORESOURCE r on r.Z_PK = t.ZSOURCERESOURCE
+            left join ZVOLUME v on v.Z_PK = r.ZVOLUME
+            where t.ZJOB = ?
             """
         guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else { return nil }
         sqlite3_bind_int64(statement, 1, Int64(row))
@@ -145,7 +148,7 @@ enum ProjectDatabase {
         while sqlite3_step(statement) == SQLITE_ROW {
             info.title = text(statement, 3) ?? info.title
             info.add(name: text(statement, 0) ?? "", size: sqlite3_column_double(statement, 1),
-                     isDone: Int(sqlite3_column_int(statement, 2)) == finishedStatus)
+                     isDone: Int(sqlite3_column_int(statement, 2)) == finishedStatus, source: text(statement, 4))
         }
         return info.totalTasks > 0 ? info : nil
     }
