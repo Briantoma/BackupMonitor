@@ -2,7 +2,7 @@
 
 **[Download Backup Monitor (DMG)](https://github.com/Oz-Color/BackupMonitor/releases/latest/download/BackupMonitor.dmg)** · [all releases](https://github.com/Oz-Color/BackupMonitor/releases)
 
-Follows Silverstack offload, verify and transcode progress at the top of the screen and in the menu bar, and warns when a card copies too slowly. Not affiliated with Pomfort. Original idea from Joe Jamieson.
+Follows Silverstack offload, verify and transcode progress at the top of the screen and in the menu bar, and warns when a card copies too slowly. For Silverstack XT and Silverstack Lab; Offload Manager is not supported. Not affiliated with Pomfort. Original idea from Joe Jamieson.
 
 Open the DMG and drag Backup Monitor to Applications. Apple Silicon and Intel, macOS 13 or later. Signed by Oz Color and notarized by Apple, so it opens like any downloaded app. At first launch, allow notifications.
 
@@ -12,7 +12,7 @@ On a MacBook with a notch, the island grows out of the notch while a job runs an
 
 ## Menu bar
 
-While a job runs the icon can show its percentage, time remaining, the number of jobs and a progress wheel, in any mix (Settings, or Show in Menu Bar in its menu). The menu lists mounted volumes, Hide Volumes, Show Demo, Open at Login, Settings, About and Quit.
+While a job runs the icon can show its percentage, speed, time remaining, the number of jobs and a progress wheel, in any mix (Settings, or Show in Menu Bar in its menu). The menu lists mounted volumes, Hide Volumes, Show Demo, Open at Login, Settings, About and Quit.
 
 ## Slow copy warning
 
@@ -28,7 +28,7 @@ A card's group is its camera letter, the first letter of reel-style names like `
 
 ## Settings
 
-Island and menu bar icon on or off (one of them always stays on), menu bar readouts, letters and minimum speed per group, notifications (slow copy on by default; job finished, failed or stopped and unreadable logs off, as Silverstack has its own), Open at Login, version and About. Settings opens on first launch, and whenever the app is opened again from Finder or Applications, which is the way back when the icon is hidden.
+Island and menu bar icon on or off (one of them always stays on), menu bar readouts, letters and minimum speed per group, notifications (slow copy on by default; job finished, failed or stopped and unreadable logs off, as Silverstack has its own), Open at Login, version and About. Settings opens on first launch, and whenever the app is opened again from Finder or Applications, which is the way back when the icon is hidden. While Settings or About is open, the app shows in the Dock and Cmd-Tab.
 
 The app checks the latest GitHub release once a day. A newer version shows in Settings and at the top of the menu, with a Download button, and one notification.
 

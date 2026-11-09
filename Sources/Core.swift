@@ -483,6 +483,7 @@ struct MenuBarOptions: OptionSet {
     static let remaining = MenuBarOptions(rawValue: 1 << 1)
     static let jobCount = MenuBarOptions(rawValue: 1 << 2)
     static let wheel = MenuBarOptions(rawValue: 1 << 3)
+    static let speed = MenuBarOptions(rawValue: 1 << 4)
 }
 
 enum MenuBarStatus {
@@ -493,6 +494,7 @@ enum MenuBarStatus {
         guard let job = active(jobs) else { return "" }
         var parts: [String] = []
         if options.contains(.percent), let fraction = job.fraction { parts.append("\(Format.percent(fraction))%") }
+        if options.contains(.speed), job.state == .running, let speed = job.speed { parts.append(speed) }
         if options.contains(.remaining), let remaining = job.remaining(at: now) { parts.append(Format.duration(remaining)) }
         if options.contains(.jobCount) {
             let count = jobs.filter { !$0.state.isFinished }.count

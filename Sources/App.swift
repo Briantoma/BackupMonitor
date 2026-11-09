@@ -815,7 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         hide.submenu = choices
         let display = menu.addItem(withTitle: "Show in Menu Bar", action: nil, keyEquivalent: "")
         let options = NSMenu()
-        for (title, option) in [("Percentage", MenuBarOptions.percent), ("Time Remaining", .remaining),
+        for (title, option) in [("Percentage", MenuBarOptions.percent), ("Speed", .speed), ("Time Remaining", .remaining),
                                 ("Number of Jobs", .jobCount), ("Progress Wheel", .wheel)] {
             let choice = options.addItem(withTitle: title, action: #selector(toggleMenuBarOption), keyEquivalent: "")
             choice.target = self

@@ -16,9 +16,10 @@ enum About {
             window.contentViewController = content
             window.setContentSize(content.view.fittingSize)   // size first, so center() uses the real size
             window.center()
+            DockPresence.track(window)
             self.window = window
         }
-        NSApp.activate(ignoringOtherApps: true)
+        DockPresence.show()
         window?.makeKeyAndOrderFront(nil)
         // Otherwise the first link gets the focus ring on opening; Tab still reaches the links.
         window?.makeFirstResponder(nil)
@@ -45,7 +46,8 @@ struct AboutView: View {
             Text("Made by Oz Color")
             Link("shop.oz-color.fr", destination: About.shop)
 
-            Text("Follows Silverstack offloads. Not affiliated with Pomfort.").padding(.top, 12)
+            Text("For Silverstack XT and Silverstack Lab. Offload Manager is not supported.").padding(.top, 12)
+            Text("Not affiliated with Pomfort.")
             Text("Original idea from Joe Jamieson").padding(.top, 4)
 
             if let copyright = info["NSHumanReadableCopyright"] as? String {

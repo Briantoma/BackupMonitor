@@ -54,11 +54,68 @@ enum SettingsWindow {
             window.contentViewController = content
             window.setContentSize(content.view.fittingSize)
             window.center()
+            DockPresence.track(window)
+            // A click anywhere outside the field being edited ends the edit, as in System Settings.
+            NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                if event.window === window, let editor = window.firstResponder as? NSText,
+                   let field = editor.delegate as? NSView,
+                   !field.bounds.contains(field.convert(event.locationInWindow, from: nil)) {
+                    window.makeFirstResponder(nil)
+                }
+                return event
+            }
             self.window = window
         }
-        NSApp.activate(ignoringOtherApps: true)
+        DockPresence.show()
         window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(nil)
     }
+}
+
+/// Puts the app in the Dock and Cmd-Tab while one of its windows is open, and takes it out again
+/// when the last one closes.
+enum DockPresence {
+    static func show() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    static func track(_ window: NSWindow) {
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
+            DispatchQueue.main.async {
+                if !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
+        }
+    }
+}
+
+/// A number field that can be cleared and retyped: the value is only checked and kept when
+/// editing ends, so a half-typed number is never snapped to the limits.
+struct SpeedField: View {
+    @Binding var value: Double
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("", text: $text)
+            .labelsHidden()
+            .focused($focused)
+            .onAppear { text = Self.format(value) }
+            .onChange(of: value) { if !focused { text = Self.format($0) } }
+            .onChange(of: focused) { if !$0 { commit() } }
+            .onSubmit(commit)
+    }
+
+    private func commit() {
+        if let number = Double(text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) {
+            value = number
+        }
+        text = Self.format(value)
+    }
+
+    private static func format(_ value: Double) -> String { String(Int(value)) }
 }
 
 struct SettingsView: View {
@@ -78,6 +135,7 @@ struct SettingsView: View {
                     Text("Menu bar shows")
                     Spacer()
                     option("%", .percent, help: "Percentage")
+                    option("Speed", .speed, help: "Copy, verify or render speed")
                     option("Time left", .remaining, help: "Time remaining")
                     option("Jobs", .jobCount, help: "Number of jobs")
                     option("Wheel", .wheel, help: "Progress wheel")
@@ -99,7 +157,7 @@ struct SettingsView: View {
                         }
                         HStack {
                             Slider(value: minimum(group), in: 10...2000, step: 10)
-                            TextField("", value: minimum(group), format: .number)
+                            SpeedField(value: minimum(group))
                                 .frame(width: 60).multilineTextAlignment(.trailing)
                             Text("MB/s").foregroundStyle(.secondary)
                         }

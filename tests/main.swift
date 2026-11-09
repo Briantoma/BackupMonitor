@@ -280,6 +280,8 @@ check(MenuBarStatus.text(for: [waiting, working], options: [.percent], now: at),
 check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining, .jobCount], now: at),
       "25% · 5m 0s · 2 jobs", "every readout")
 check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job", "singular")
+working.speed = "466.6 MB/s"
+check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), "25% · 466.6 MB/s", "speed after percent")
 
 // Card groups come from the camera letter of reel-style names; letters belong to one group.
 var rules = CardRules.standard
