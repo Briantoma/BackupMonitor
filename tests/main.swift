@@ -283,51 +283,56 @@ check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job"
 working.speed = "466.6 MB/s"
 check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), "25% · 466.6 MB/s", "speed after percent")
 
-// Card groups come from the camera letter of reel-style names; letters belong to one group.
+// Card groups come from full card names, or the camera letter of reel-style names.
 var rules = CardRules.standard
 check(rules.group(of: "A015CAZH"), .camera, "reel name is a camera card")
-check(rules.group(of: "S004_261103"), .audio, "S is audio")
+check(rules.group(of: "CANTAR_SD"), .audio, "full name is audio")
+check(rules.group(of: "cantar_sd"), .audio, "names ignore case")
 check(rules.group(of: "A6MT3_20TB"), .other, "drive name is other")
 check(rules.group(of: "DJI"), .other, "short name is other")
 check(rules.group(of: "K001"), .other, "unassigned letter is other")
-rules.setLetters("as a", for: .audio)
-check(rules.letters[.audio], "AS", "letters cleaned")
-check(rules.letters[.camera], "BCDEFGH", "moved letter leaves the other group")
+rules.setEntries(" s, a ,mixpre,, S", for: .audio)
+check(rules.text(for: .audio), "S, A, MIXPRE", "entries cleaned")
+check(rules.text(for: .camera), "B, C, D, E, F, G, H", "moved letter leaves the other group")
+check(rules.group(of: "S004_261103"), .audio, "letter entry")
+check(rules.group(of: "MIXPRE"), .audio, "name entry")
 
-// Copy-phase speeds are read per file and summed per source card over 30 seconds.
-func speedLine(_ second: Int, _ file: String, _ bytes: String) -> String {
-    "I \(stamp(second)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <\(file)> [prog ] 5% [spd  ] 1 MB (\(bytes) bytes)/s"
+// Real copy speed comes from file sizes over copy-phase times, not Silverstack's speed figure.
+func line(_ second: Int, _ file: String, _ rest: String, verb: String = "MSG") -> String {
+    let stamp = String(format: "2026-11-02 09:%02d:%02d.000+0000", 33 + second / 60, second % 60)
+    return "I \(stamp) <JBX:Z2z.dij> [1] \(verb): CopyTaskExecution <\(file)> \(rest)"
 }
-tracker = Tracker()
-started(tracker)
-var sourced = JobInfo(title: "REEL")
-sourced.add(name: "a.MP4", size: 90, isDone: false, source: "A015CAZH")
-sourced.add(name: "b.LRF", size: 10, isDone: false, source: "A015CAZH")
-tracker.setInfo(sourced, forJob: "Z2z.dij")
-tracker.ingest(speedLine(2, "a.MP4", "999,000,000.5"))
-check(tracker.jobs[0].copySpeeds.isEmpty, true, "no speed before the copy phase")
-tracker.ingest("I \(stamp(2)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <a.MP4> [info ] copy [prog ] 0%")
-tracker.ingest("I \(stamp(2)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <b.LRF> [info ] copy [prog ] 0%")
-check(tracker.unrecognised, 0, "known lines are recognised")
 let logDates = DateFormatter()
 logDates.locale = Locale(identifier: "en_US_POSIX")
 logDates.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSZ"
-let start = logDates.date(from: stamp(3))!
+func time(_ second: Int) -> Date { logDates.date(from: String(format: "2026-11-02 09:%02d:%02d.000+0000", 33 + second / 60, second % 60))! }
+tracker = Tracker()
+started(tracker)
+var sourced = JobInfo(title: "REEL")
+sourced.add(name: "a.MXF", size: 15_000e6, isDone: false, source: "A015CAZH")
+sourced.add(name: "b.MXF", size: 6_000e6, isDone: false, source: "A015CAZH")
+tracker.setInfo(sourced, forJob: "Z2z.dij")
+tracker.ingest(line(0, "a.MXF", "[info ] copy [prog ] 0%"))
+tracker.ingest(line(1, "a.MXF", "[prog ] 1% [spd  ] 716.8 MB (716,827,376.3 bytes)/s"))
 let watch = SpeedWatch()
-for second in 3...40 {
-    tracker.ingest(speedLine(second, "a.MP4", "200,000,000.0"))
-    tracker.ingest(speedLine(second, "b.LRF", "100,000,000.0"))
-    let slow = watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(Double(second - 3)))
-    if second < 27 { check(slow.isEmpty, true, "no warning before 24 s of history (\(second))") }
-}
-let slow = watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(37))
-check(slow.map(\.text), ["Slow: 300 MB/s (min 500) · A015CAZH"], "files of one card add up")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(20)).isEmpty, true, "nothing to judge before 30 s")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(29)).isEmpty, true, "a 15 GB clip may still be fast at 29 s")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(31)).map(\.text), ["Slow: 483 MB/s (min 500) · A015CAZH"],
+      "unfinished after 31 s: at most 483 MB/s")
+tracker.ingest(line(75, "a.MXF", "[info ] verify [prog ] 51%"))
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(76)).map(\.text), ["Slow: 200 MB/s (min 500) · A015CAZH"],
+      "finished copy gives the exact speed")
 var lenient = CardRules.standard
-lenient.minimum[.camera] = 250
-check(watch.update(jobs: tracker.jobs, rules: lenient, now: start.addingTimeInterval(37)).isEmpty, true, "above minimum")
-check(watch.update(jobs: tracker.jobs, rules: .standard, now: start.addingTimeInterval(60)).isEmpty, true, "stale speeds stop")
-tracker.ingest("I \(stamp(41)) <JBX:Z2z.dij> [1] MSG: CopyTaskExecution <a.MP4 garbled")
-tracker.ingest("I \(stamp(41)) <JBSTE> [1] state transition: something new")
-check(tracker.unrecognised, 2, "changed format is counted")
+lenient.minimum[.camera] = 150
+check(watch.update(jobs: tracker.jobs, rules: lenient, now: time(76)).isEmpty, true, "fast enough for its minimum")
+// Without verify the copy phase ends with the file.
+tracker.ingest(line(76, "b.MXF", "[info ] copy [prog ] 0%"))
+tracker.ingest(line(96, "b.MXF", "fileToolResult([copiedSize: 6000000000])", verb: "FIN"))
+check(tracker.jobs[0].copies.map(\.name), ["a.MXF", "b.MXF"], "copy-only file recorded at FIN")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(97)).map(\.text), ["Slow: 221 MB/s (min 500) · A015CAZH"],
+      "recent copies add up, without the idle second between them")
+check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(200)).isEmpty, true, "old copies stop counting")
+tracker.ingest("I 2026-11-02 09:36:22.000+0000 <JBSTE> [1] state transition: something new")
+check(tracker.unrecognised, 1, "changed format is counted")
 
 if failures == 0 { print("All tests passed") } else { exit(1) }

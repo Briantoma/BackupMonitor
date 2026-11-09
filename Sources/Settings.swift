@@ -14,7 +14,7 @@ final class Preferences: ObservableObject {
     @Published var notifyLogs: Bool { didSet { defaults.set(notifyLogs, forKey: "notifyLogs") } }
     @Published var rules: CardRules {
         didSet {
-            defaults.set(Dictionary(uniqueKeysWithValues: rules.letters.map { ($0.key.rawValue, $0.value) }), forKey: "cardLetters")
+            defaults.set(Dictionary(uniqueKeysWithValues: rules.entries.map { ($0.key.rawValue, $0.value) }), forKey: "cardEntries")
             defaults.set(Dictionary(uniqueKeysWithValues: rules.minimum.map { ($0.key.rawValue, $0.value) }), forKey: "cardMinimum")
         }
     }
@@ -32,8 +32,8 @@ final class Preferences: ObservableObject {
         notifyJobs = flag("notifyJobs", false)
         notifyLogs = flag("notifyLogs", false)
         var rules = CardRules.standard
-        for (key, value) in defaults.dictionary(forKey: "cardLetters") as? [String: String] ?? [:] {
-            if let group = CardGroup(rawValue: key) { rules.letters[group] = value }
+        for (key, value) in defaults.dictionary(forKey: "cardEntries") as? [String: [String]] ?? [:] {
+            if let group = CardGroup(rawValue: key) { rules.entries[group] = value }
         }
         for (key, value) in defaults.dictionary(forKey: "cardMinimum") as? [String: Double] ?? [:] {
             if let group = CardGroup(rawValue: key) { rules.minimum[group] = value }
@@ -93,31 +93,30 @@ enum DockPresence {
     }
 }
 
-/// A number field that can be cleared and retyped: the value is only checked and kept when
-/// editing ends, so a half-typed number is never snapped to the limits.
-struct SpeedField: View {
-    @Binding var value: Double
+/// A field that can be cleared and retyped freely: what's typed is only read and kept when
+/// editing ends, so a half-typed number or list is never reformatted under the cursor.
+struct CommitField: View {
+    let value: String
+    var prompt = ""
+    let commit: (String) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField("", text: $text)
+        TextField("", text: $text, prompt: Text(prompt))
             .labelsHidden()
             .focused($focused)
-            .onAppear { text = Self.format(value) }
-            .onChange(of: value) { if !focused { text = Self.format($0) } }
-            .onChange(of: focused) { if !$0 { commit() } }
-            .onSubmit(commit)
+            .onAppear { text = value }
+            .onChange(of: value) { if !focused { text = $0 } }
+            .onChange(of: focused) { if !$0 { finish() } }
+            .onSubmit(finish)
     }
 
-    private func commit() {
-        if let number = Double(text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) {
-            value = number
-        }
-        text = Self.format(value)
+    private func finish() {
+        commit(text)
+        // Shows the cleaned-up value, or the old one when what was typed made no sense.
+        DispatchQueue.main.async { text = value }
     }
-
-    private static func format(_ value: Double) -> String { String(Int(value)) }
 }
 
 struct SettingsView: View {
@@ -147,21 +146,27 @@ struct SettingsView: View {
             }
             Section {
                 ForEach(CardGroup.allCases, id: \.self) { group in
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(group.label)
                             Spacer()
                             if group == .other {
-                                Text("Other letters and drives").foregroundStyle(.secondary)
-                            } else {
-                                TextField("Letters", text: letters(group), prompt: Text("Letters"))
-                                    .labelsHidden().frame(width: 150).multilineTextAlignment(.trailing)
+                                Text("Everything else").foregroundStyle(.secondary)
+                            }
+                        }
+                        if group != .other {
+                            CommitField(value: prefs.rules.text(for: group), prompt: "Letters or card names, e.g. A, B, CANTAR_SD") {
+                                prefs.rules.setEntries($0, for: group)
                             }
                         }
                         HStack {
-                            Slider(value: minimum(group), in: 10...2000, step: 10)
-                            SpeedField(value: minimum(group))
-                                .frame(width: 60).multilineTextAlignment(.trailing)
+                            Slider(value: minimum(group), in: 10...2000)
+                            CommitField(value: String(Int(prefs.rules.minimum[group] ?? 0))) { typed in
+                                if let number = Double(typed.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) {
+                                    prefs.rules.minimum[group] = min(max(number.rounded(), 10), 2000)
+                                }
+                            }
+                            .frame(width: 60).multilineTextAlignment(.trailing)
                             Text("MB/s").foregroundStyle(.secondary)
                         }
                     }
@@ -169,7 +174,7 @@ struct SettingsView: View {
             } header: {
                 Text("Slow copy warning")
             } footer: {
-                Text("A card's group is its camera letter, the first letter of names like A015CAZH or D902_261103. Warns when a card copies under its minimum for 30 seconds.")
+                Text("Separate entries with commas. A single letter is a camera letter, the first letter of names like A015CAZH or D902_261103; anything longer is a full card name. Warns once a card's real copy speed, from file sizes and copy times, is under its minimum.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -202,6 +207,7 @@ struct SettingsView: View {
                         Text("Version \(version)").foregroundStyle(.secondary)
                         Spacer()
                     }
+                    Button("Show Demo") { store.runDemo() }
                     Button("About") { About.show() }
                 }
             }
@@ -223,12 +229,9 @@ struct SettingsView: View {
             .toggleStyle(.button).help(help)
     }
 
-    private func letters(_ group: CardGroup) -> Binding<String> {
-        Binding(get: { prefs.rules.letters[group] ?? "" }, set: { prefs.rules.setLetters($0, for: group) })
-    }
-
     private func minimum(_ group: CardGroup) -> Binding<Double> {
         Binding(get: { prefs.rules.minimum[group] ?? 0 },
-                set: { prefs.rules.minimum[group] = min(max($0.rounded(), 10), 2000) })
+                // Steps of 10 on the slider; drawn without step ticks, which crowd a 10...2000 range.
+                set: { prefs.rules.minimum[group] = min(max(($0 / 10).rounded() * 10, 10), 2000) })
     }
 }

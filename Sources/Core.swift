@@ -72,9 +72,10 @@ struct Job: Identifiable {
     var active: [String: Double] = [:]
     var phase: String?
     var speed: String?
-    /// Latest copy-phase speed of each file in flight, in bytes per second.
-    var copySpeeds: [String: (bytesPerSecond: Double, at: Date)] = [:]
-    var filePhases: [String: String] = [:]
+    /// When each file in flight entered its copy phase, and the copy phases already over. Their
+    /// sizes over these times give the real speed, which Silverstack's own figure overstates.
+    var copyStarted: [String: Date] = [:]
+    var copies: [(name: String, start: Date, end: Date)] = []
     var currentFile: String?
     var errors = 0
     var lastError: String?
@@ -161,7 +162,6 @@ final class Tracker {
     private static let taskLine = pattern(#"(MSG|FIN|ERR): \w+TaskExecution <(.*?)>(?: |$)(.*)$"#)
     private static let progress = pattern(#"\[prog\s*\] (\d+)%"#)
     private static let speed = pattern(#"\[spd\s*\] ([\d.]+ \w+)"#)
-    private static let exactSpeed = pattern(#"\(([\d,.]+) bytes\)/s"#)
     private static let phase = pattern(#"\[info\s*\] (\w+)"#)
     private static let errorText = pattern(#"Code=-?\d+ "(.*?)" UserInfo"#)
     private static let quoted = pattern(#""([^"]+)""#)
@@ -269,9 +269,9 @@ final class Tracker {
         let verb = parts[1], name = parts[2], rest = parts[3]
         let date = Self.date(line)
         if let date { jobs[index].lastActivity = date }
-        if verb != "MSG" {
-            jobs[index].copySpeeds[name] = nil
-            jobs[index].filePhases[name] = nil
+        if verb != "MSG", let start = jobs[index].copyStarted.removeValue(forKey: name), verb == "FIN", let date {
+            // No verify step: the copy phase ends with the file.
+            endCopy(index, name, start, date)
         }
 
         switch verb {
@@ -291,16 +291,22 @@ final class Tracker {
             }
             if let phase = Self.groups(Self.phase, rest)?[1] {
                 jobs[index].phase = phase
-                jobs[index].filePhases[name] = phase
+                if let date {
+                    if phase == "copy" && jobs[index].copyStarted[name] == nil { jobs[index].copyStarted[name] = date }
+                    if phase != "copy", let start = jobs[index].copyStarted.removeValue(forKey: name) {
+                        endCopy(index, name, start, date)
+                    }
+                }
             }
             if let speed = Self.groups(Self.speed, rest)?[1] {
                 jobs[index].speed = speed.hasSuffix("FPS") ? speed : speed + "/s"
             }
-            if jobs[index].filePhases[name] == "copy", let date,
-               let exact = Self.groups(Self.exactSpeed, rest).flatMap({ Double($0[1].replacingOccurrences(of: ",", with: "")) }) {
-                jobs[index].copySpeeds[name] = (exact, date)
-            }
         }
+    }
+
+    private func endCopy(_ index: Int, _ name: String, _ start: Date, _ end: Date) {
+        jobs[index].copies.append((name, start, end))
+        if jobs[index].copies.count > 200 { jobs[index].copies.removeFirst(100) }
     }
 
     func setInfo(_ info: JobInfo, forJob id: String) {
@@ -516,33 +522,39 @@ enum CardGroup: String, CaseIterable {
     }
 }
 
-/// Which camera letters belong to which group, and each group's minimum copy speed in MB/s.
+/// Which cards belong to which group, and each group's minimum copy speed in MB/s. A group's
+/// entries are camera letters (one letter) and full volume names, as typed in Settings.
 struct CardRules: Equatable {
-    var letters: [CardGroup: String]
+    var entries: [CardGroup: [String]]
     var minimum: [CardGroup: Double]
 
-    static let standard = CardRules(letters: [.camera: "ABCDEFGH", .audio: "S"],
+    static let standard = CardRules(entries: [.camera: ["A", "B", "C", "D", "E", "F", "G", "H"], .audio: ["CANTAR_SD"]],
                                     minimum: [.camera: 500, .audio: 40, .other: 150])
 
-    /// The camera letter is the first letter of a reel-style name: A015CAZH, D902_261103, E004.
-    /// Anything else (SSD_01, DJI, A6MT3_20TB) is another source.
+    /// A full name wins; otherwise the camera letter, the first letter of a reel-style name like
+    /// A015CAZH, D902_261103 or E004. Anything else (SSD_01, DJI, A6MT3_20TB) is another source.
     func group(of volume: String) -> CardGroup {
-        let start = Array(volume.prefix(4))
+        let name = volume.uppercased()
+        for group in [CardGroup.camera, .audio] where entries[group, default: []].contains(name) { return group }
+        let start = Array(name.prefix(4))
         guard start.count == 4, start[0].isASCII, start[0].isLetter,
               start.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return .other }
-        let letter = start[0].uppercased()
-        if letters[.camera, default: ""].contains(letter) { return .camera }
-        if letters[.audio, default: ""].contains(letter) { return .audio }
+        for group in [CardGroup.camera, .audio] where entries[group, default: []].contains(String(start[0])) { return group }
         return .other
     }
 
-    /// Keeps letters only, upper case, once, and takes them away from the other group.
-    mutating func setLetters(_ text: String, for group: CardGroup) {
-        var seen = Set<Character>()
-        let clean = String(text.uppercased().filter { $0.isASCII && $0.isLetter && seen.insert($0).inserted })
-        letters[group] = clean
+    func text(for group: CardGroup) -> String { entries[group, default: []].joined(separator: ", ") }
+
+    /// Comma-separated, upper case, once, and taken away from the other group.
+    mutating func setEntries(_ text: String, for group: CardGroup) {
+        var clean: [String] = []
+        for part in text.split(separator: ",") {
+            let entry = part.trimmingCharacters(in: .whitespaces).uppercased()
+            if !entry.isEmpty && !clean.contains(entry) { clean.append(entry) }
+        }
+        entries[group] = clean
         for other in [CardGroup.camera, .audio] where other != group {
-            letters[other] = letters[other, default: ""].filter { !clean.contains($0) }
+            entries[other] = entries[other, default: []].filter { !clean.contains($0) }
         }
     }
 }
@@ -558,39 +570,50 @@ struct SlowCard: Equatable {
     var text: String { "Slow: \(Int(speed)) MB/s (min \(Int(minimum))) · \(card)" }
 }
 
-/// Averages each card's copy speed over the last 30 seconds, so a dip at the start of a clip
-/// or on a small sidecar file never warns.
+/// Measures each card's real copy speed from file sizes and copy-phase times. A finished copy
+/// gives the exact speed. A file still copying can only be as fast as its size over the time so
+/// far, so once that falls under the minimum the card is certainly slow, even on a long clip.
 final class SpeedWatch {
-    static let window: TimeInterval = 30
-    static let fresh: TimeInterval = 2
-    private var samples: [String: [(at: Date, mbps: Double)]] = [:]
+    static let settle: TimeInterval = 30
+    static let recent: TimeInterval = 60
 
     func update(jobs: [Job], rules: CardRules, now: Date) -> [SlowCard] {
         var slow: [SlowCard] = []
-        var live = Set<String>()
-        for job in jobs where !job.state.isFinished {
+        for job in jobs where job.state == .running {
             guard let info = job.info else { continue }
-            // Files copying from the same card add up, as Silverstack can read several at once.
-            var perCard: [String: Double] = [:]
-            for (name, sample) in job.copySpeeds where now.timeIntervalSince(sample.at) <= Self.fresh {
-                guard let card = info.sources[name] else { continue }
-                perCard[card, default: 0] += sample.bytesPerSecond / 1e6
+            var cards = Set<String>()
+            for name in job.copyStarted.keys { if let card = info.sources[name] { cards.insert(card) } }
+            for copy in job.copies where now.timeIntervalSince(copy.end) <= Self.recent {
+                if let card = info.sources[copy.name] { cards.insert(card) }
             }
-            for (card, mbps) in perCard {
-                let key = "\(job.id)|\(card)"
-                live.insert(key)
-                var history = samples[key, default: []].filter { now.timeIntervalSince($0.at) <= Self.window }
-                history.append((now, mbps))
-                samples[key] = history
-                let average = history.map(\.mbps).reduce(0, +) / Double(history.count)
+            for card in cards {
                 let group = rules.group(of: card)
                 let minimum = rules.minimum[group] ?? 0
-                guard let first = history.first, now.timeIntervalSince(first.at) >= Self.window * 0.8,
-                      average < minimum else { continue }
-                slow.append(SlowCard(jobID: job.id, card: card, group: group, speed: average, minimum: minimum))
+                guard let speed = Self.speed(of: card, in: job, info: info, minimum: minimum, now: now),
+                      speed < minimum else { continue }
+                slow.append(SlowCard(jobID: job.id, card: card, group: group, speed: speed, minimum: minimum))
             }
         }
-        samples = samples.filter { live.contains($0.key) }
         return slow.sorted { $0.key < $1.key }
+    }
+
+    /// MB/s, or nil while there isn't 30 seconds of copying to judge by.
+    private static func speed(of card: String, in job: Job, info: JobInfo, minimum: Double, now: Date) -> Double? {
+        let flying = job.copyStarted.filter { info.sources[$0.key] == card }
+        if !flying.isEmpty, flying.values.allSatisfy({ now.timeIntervalSince($0) >= settle }) {
+            // Several files at once add up, so the bound stays above the card's real speed.
+            let bound = flying.reduce(0.0) { $0 + info.size(of: $1.key) / now.timeIntervalSince($1.value) } / 1e6
+            if bound < minimum { return bound }
+        }
+        let done = job.copies.filter { info.sources[$0.name] == card && now.timeIntervalSince($0.end) <= recent }
+        // Only time spent copying counts: the card sits idle while a clip is verified.
+        var copying: TimeInterval = 0
+        var reach = Date.distantPast
+        for copy in done.sorted(by: { $0.start < $1.start }) {
+            copying += max(copy.end.timeIntervalSince(max(copy.start, reach)), 0)
+            reach = max(reach, copy.end)
+        }
+        guard copying >= settle else { return nil }
+        return done.reduce(0.0) { $0 + info.size(of: $1.name) } / copying / 1e6
     }
 }

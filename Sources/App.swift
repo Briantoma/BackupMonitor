@@ -476,7 +476,6 @@ struct IslandView: View {
 
     private var controls: some View {
         HStack(spacing: 16) {
-            Button("Show Demo") { store.runDemo() }
             Button("Settings…") { SettingsWindow.show(store: store) }
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
@@ -639,17 +638,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private let store = Store()
     private let prefs = Preferences.shared
     private var prefsUpdates: Any?
-    private var menuUpdates: Any?
-    private var updateUpdates: Any?
     private var panel: IslandPanel!
     private var statusItem: NSStatusItem!
     private var metrics = IslandMetrics(notchWidth: 190, height: 37)
     private var refresh: Any?
     private var hoverTimer: Timer?
-    private var volumeUpdates: Any?
-    private var hiddenUpdates: Any?
     private let menu = NSMenu()
-    private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private static let idleIcon = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
                                           accessibilityDescription: "Backup Monitor")
 
@@ -674,17 +668,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 self?.updateStatusItem()
             }
         }
-        volumeUpdates = store.$volumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
-        hiddenUpdates = store.$hiddenVolumes.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
-        menuUpdates = store.$logProblem.removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
-        updateUpdates = Updater.shared.$available.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rebuildMenu() }
         prefsUpdates = prefs.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.statusItem.isVisible = self.prefs.showMenuBar
                 self.layoutPanel()
                 self.updateStatusItem()
-                self.rebuildMenu()
             }
         }
         UNUserNotificationCenter.current().delegate = self
@@ -787,15 +776,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         statusItem.autosaveName = "BackupMonitor"
         statusItem.isVisible = prefs.showMenuBar
         updateStatusItem()
-        loginItem.target = self
         menu.delegate = self
-        rebuildMenu()
         statusItem.menu = menu
     }
 
     func menuWillOpen(_ menu: NSMenu) { store.refreshVolumes() }
 
-    private func rebuildMenu() {
+    /// Built just before the menu opens and never while it is open: removing items from an open
+    /// menu leaves it at its old height, with a blank space at the bottom.
+    func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if let update = Updater.shared.available {
             menu.addItem(withTitle: "Download Backup Monitor \(update.version)…", action: #selector(downloadUpdate), keyEquivalent: "").target = self
@@ -813,29 +802,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             menu.addItem(withTitle: "No volumes to show", action: nil, keyEquivalent: "").isEnabled = false
         }
         for volume in store.visibleVolumes { menu.addItem(item(for: volume)) }
-        menu.addItem(.separator())
-        let hide = menu.addItem(withTitle: "Hide Volumes", action: nil, keyEquivalent: "")
-        let choices = NSMenu()
-        for volume in store.volumes {
-            let choice = choices.addItem(withTitle: volume.name, action: #selector(toggleHidden), keyEquivalent: "")
-            choice.target = self
-            choice.representedObject = volume.key
-            choice.state = store.hiddenVolumes.contains(volume.key) ? .on : .off
-        }
-        hide.submenu = choices
-        let display = menu.addItem(withTitle: "Show in Menu Bar", action: nil, keyEquivalent: "")
-        let options = NSMenu()
-        for (title, option) in [("Percentage", MenuBarOptions.percent), ("Speed", .speed), ("Time Remaining", .remaining),
-                                ("Number of Jobs", .jobCount), ("Progress Wheel", .wheel)] {
-            let choice = options.addItem(withTitle: title, action: #selector(toggleMenuBarOption), keyEquivalent: "")
-            choice.target = self
-            choice.tag = option.rawValue
-            choice.state = prefs.menuBarOptions.contains(option) ? .on : .off
-        }
-        display.submenu = options
-        menu.addItem(withTitle: "Show Demo", action: #selector(showDemo), keyEquivalent: "").target = self
-        loginItem.state = store.opensAtLogin ? .on : .off
-        menu.addItem(loginItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "About Backup Monitor", action: #selector(showAbout), keyEquivalent: "").target = self
@@ -876,28 +842,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
-    @objc private func toggleHidden(_ item: NSMenuItem) {
-        guard let volume = store.volumes.first(where: { $0.key == item.representedObject as? String }) else { return }
-        store.toggleHidden(volume)
-    }
-
     @objc private func reveal(_ item: NSMenuItem) {
         guard let path = item.representedObject as? String else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
-
-    @objc private func showDemo() { store.runDemo() }
 
     @objc private func showSettings() { SettingsWindow.show(store: store) }
 
     @objc private func showAbout() { About.show() }
 
     @objc private func downloadUpdate() { Updater.shared.download() }
-
-    @objc private func toggleMenuBarOption(_ item: NSMenuItem) {
-        let option = MenuBarOptions(rawValue: item.tag)
-        if prefs.menuBarOptions.contains(option) { prefs.menuBarOptions.remove(option) } else { prefs.menuBarOptions.insert(option) }
-    }
 
     /// The drive icon between jobs, the chosen readouts while one runs.
     private func updateStatusItem() {
@@ -935,10 +889,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         image.isTemplate = true
         image.accessibilityDescription = "\(Format.percent(fraction))% done"
         return image
-    }
-
-    @objc private func toggleLogin(_ item: NSMenuItem) {
-        store.toggleLogin()
-        item.state = store.opensAtLogin ? .on : .off
     }
 }
