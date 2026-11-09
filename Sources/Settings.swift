@@ -51,6 +51,8 @@ enum SettingsWindow {
             window.title = "Backup Monitor Settings"
             window.isReleasedWhenClosed = false
             let content = NSHostingController(rootView: SettingsView(store: store))
+            // Follows the volume list as cards are mounted and ejected.
+            content.sizingOptions = .preferredContentSize
             window.contentViewController = content
             window.setContentSize(content.view.fittingSize)
             window.center()
@@ -131,14 +133,15 @@ struct SettingsView: View {
                 // The last of the two can't be turned off, or nothing would be left to reach Settings.
                 Toggle("Island at the top of the screen", isOn: $prefs.showIsland).disabled(prefs.showIsland && !prefs.showMenuBar)
                 Toggle("Menu bar icon", isOn: $prefs.showMenuBar).disabled(prefs.showMenuBar && !prefs.showIsland)
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Menu bar shows")
-                    Spacer()
-                    option("%", .percent, help: "Percentage")
-                    option("Speed", .speed, help: "Copy, verify or render speed")
-                    option("Time left", .remaining, help: "Time remaining")
-                    option("Jobs", .jobCount, help: "Number of jobs")
-                    option("Wheel", .wheel, help: "Progress wheel")
+                    HStack {
+                        option("Percentage", .percent, help: "Percentage done")
+                        option("Speed", .speed, help: "Copy, verify or render speed")
+                        option("Time left", .remaining, help: "Time remaining")
+                        option("Jobs", .jobCount, help: "Number of jobs")
+                        option("Wheel", .wheel, help: "Progress wheel")
+                    }
                 }
                 .disabled(!prefs.showMenuBar)
             }
@@ -169,6 +172,20 @@ struct SettingsView: View {
                 Text("A card's group is its camera letter, the first letter of names like A015CAZH or D902_261103. Warns when a card copies under its minimum for 30 seconds.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section {
+                if store.volumes.isEmpty {
+                    Text("No volumes mounted").foregroundStyle(.secondary)
+                }
+                ForEach(store.volumes) { volume in
+                    Toggle(volume.name, isOn: Binding(get: { !store.hiddenVolumes.contains(volume.key) },
+                                                      set: { _ in store.toggleHidden(volume) }))
+                }
+            } header: {
+                Text("Mounted volumes")
+            } footer: {
+                Text("Unchecked volumes, such as master drives, are hidden from the island and the menu. Disk images are never listed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Notifications") {
                 Toggle("Slow copy", isOn: $prefs.notifySlow)
                 Toggle("Job finished, failed or stopped", isOn: $prefs.notifyJobs)
@@ -192,7 +209,10 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { updater.checkIfStale() }
+        .onAppear {
+            updater.checkIfStale()
+            store.refreshVolumes()
+        }
     }
 
     private func option(_ title: String, _ option: MenuBarOptions, help: String) -> some View {

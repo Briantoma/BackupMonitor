@@ -8,7 +8,7 @@ Open the DMG and drag Backup Monitor to Applications. Apple Silicon and Intel, m
 
 ## Island
 
-On a MacBook with a notch, the island grows out of the notch while a job runs and stays hidden otherwise. Without a notch it drops from the top centre of the screen (off by default there, see Settings). Hover it for details, queued jobs, recently completed jobs, mounted volumes, Show Demo, Settings and Quit. Edit, beside the Mounted volumes heading, hides volumes such as master drives. A green tick means every file now on the volume was copied by a successful Silverstack job, a blue tick that every clip on it has also been transcoded.
+On a MacBook with a notch, the island grows out of the notch while a job runs and stays hidden otherwise. Without a notch it drops from the top centre of the screen (off by default there, see Settings). Hover it for details, queued jobs, recently completed jobs, mounted volumes, Show Demo, Settings and Quit. Edit, beside the Mounted volumes heading, hides volumes such as master drives; Settings has the same list as checkboxes. Mounted disk images (DMGs) are never listed. A green tick means every file now on the volume was copied by a successful Silverstack job, a blue tick that every clip on it has also been transcoded.
 
 ## Menu bar
 

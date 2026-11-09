@@ -3,6 +3,7 @@ import AppKit
 import ServiceManagement
 import Combine
 import UserNotifications
+import DiskArbitration
 
 @main
 enum Main {
@@ -31,7 +32,7 @@ enum VolumeScanner {
     static func scan() -> [VolumeStatus] {
         let keys: [URLResourceKey] = [.volumeNameKey, .volumeUUIDStringKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]
         let mounted = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
-        return mounted.filter { $0.path.hasPrefix("/Volumes/") }.compactMap { url in
+        return mounted.filter { $0.path.hasPrefix("/Volumes/") && !isDiskImage($0) }.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
             let total = values.volumeTotalCapacity ?? 0
             let name = values.volumeName ?? url.lastPathComponent
@@ -46,6 +47,15 @@ enum VolumeScanner {
             }
             return status
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static let session = DASessionCreate(kCFAllocatorDefault)
+
+    /// Mounted DMGs, like an installer, are never cards or backup drives.
+    private static func isDiskImage(_ url: URL) -> Bool {
+        guard let session, let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL),
+              let description = DADiskCopyDescription(disk) as? [CFString: Any] else { return false }
+        return description[kDADiskDescriptionDeviceModelKey] as? String == "Disk Image"
     }
 
     private static func files(in volume: URL) -> AnyIterator<(path: String, size: Double)> {
