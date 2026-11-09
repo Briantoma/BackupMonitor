@@ -20,6 +20,8 @@ On a MacBook with a notch, the island grows out of the notch while a job runs an
 
 ## Menu bar
 
+<p align="center"><img src="docs/menubar.png" width="300" alt="Menu bar readout: progress wheel, 92%, 3.21 GB/s, 6s left"></p>
+
 While a job runs the icon can show its percentage, speed, time remaining, the number of jobs and a progress wheel, in any mix (chosen in Settings). The menu lists mounted volumes, Settings, About and Quit.
 
 ## Slow copy warning
