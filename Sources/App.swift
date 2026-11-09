@@ -649,6 +649,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         metrics = Self.measure(Self.screen)
+        setUpMainMenu()
         setUpMenu()
         panel = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
@@ -768,6 +769,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let frame = topCentered(size)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
         if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    /// Shown while Settings or About is open. Without it the windows get no Cmd-W, and the text
+    /// fields no Cmd-C, Cmd-V or Cmd-A.
+    private func setUpMainMenu() {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            main.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = menu
+        }
+        func item(_ title: String, _ action: Selector?, _ key: String, _ modifiers: NSEvent.ModifierFlags = .command,
+                  target: AnyObject? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = target
+            return item
+        }
+        submenu("Backup Monitor", [
+            item("About Backup Monitor", #selector(showAbout), "", target: self),
+            item("Settings…", #selector(showSettings), ",", target: self),
+            .separator(),
+            item("Hide Backup Monitor", #selector(NSApplication.hide), "h"),
+            item("Quit Backup Monitor", #selector(NSApplication.terminate), "q"),
+        ])
+        submenu("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut), "x"),
+            item("Copy", #selector(NSText.copy), "c"),
+            item("Paste", #selector(NSText.paste), "v"),
+            item("Select All", #selector(NSText.selectAll), "a"),
+        ])
+        submenu("Window", [
+            item("Close", #selector(NSWindow.performClose), "w"),
+            item("Minimize", #selector(NSWindow.performMiniaturize), "m"),
+        ])
+        NSApp.mainMenu = main
     }
 
     private func setUpMenu() {
