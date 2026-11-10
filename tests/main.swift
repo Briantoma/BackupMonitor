@@ -287,6 +287,26 @@ check(MenuBarStatus.widest(options: [.percent, .speed, .remaining]),
       "widest readouts in the same order as the text")
 check(MenuBarStatus.widest(options: [.wheel]), [""], "wheel alone has no text")
 
+// The pill: circle first, then the width, then the text.
+check(PillShape(openness: 0), PillShape(openness: -1), "closed")
+check(PillShape(openness: 0.15).alpha, 0.5, "circle fading in")
+check(PillShape(openness: 0.3).widen, 0, "still a circle when fully faded in")
+check(PillShape(openness: 0.8).widen, 1, "full width before the text")
+check(PillShape(openness: 0.8).text, 0, "text only after the widening")
+check(PillShape(openness: 1), PillShape(openness: 2), "open")
+var quiet = working
+quiet.lastActivity = at.addingTimeInterval(-25)
+check(MenuBarStatus.tone(for: [working], slow: false, green: false, quietAfter: 20, now: at), .neutral, "copying normally")
+check(MenuBarStatus.tone(for: [working], slow: true, green: false, quietAfter: 20, now: at), .orange, "slow card")
+check(MenuBarStatus.tone(for: [quiet], slow: false, green: false, quietAfter: 20, now: at), .orange, "no update for 25 s")
+var erring = working
+erring.errors = 1
+check(MenuBarStatus.tone(for: [erring, quiet], slow: true, green: false, quietAfter: 20, now: at), .red, "errors beat slow")
+var failedJob = working
+failedJob.state = .failed
+check(MenuBarStatus.tone(for: [failedJob], slow: false, green: true, quietAfter: 20, now: at), .red, "failed stays red")
+check(MenuBarStatus.tone(for: [], slow: false, green: true, quietAfter: 20, now: at), .green, "success")
+
 // Card groups come from full card names, or the camera letter of reel-style names.
 var rules = CardRules.standard
 check(rules.group(of: "A015CAZH"), .camera, "reel name is a camera card")

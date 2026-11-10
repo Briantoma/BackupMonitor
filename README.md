@@ -19,7 +19,7 @@ On a MacBook with a notch, the island grows out of the notch while a job runs an
 
 <p align="center"><img src="docs/menubar.png" width="300" alt="Menu bar readout: progress wheel, 92%, 3.21 GB/s, 6s left"></p>
 
-While a job runs the icon can show its percentage, speed, time remaining, the number of jobs and a progress wheel, in any mix (chosen in Settings). The menu shows the same job rows as the island (progress bars, details, queued and recently completed jobs), then mounted volumes, Settings, About and Quit.
+While a job runs the icon can show its percentage, speed, time remaining, the number of jobs and a progress wheel, in any mix (chosen in Settings). They sit on a pill that opens from a circle when a job starts and folds back when it ends: neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job until it is dismissed, and green with "Done" for 2 seconds after the last job succeeds. The menu shows the same job rows as the island (progress bars, details, queued and recently completed jobs), then mounted volumes, Settings, About and Quit.
 
 ## Slow copy warning
 

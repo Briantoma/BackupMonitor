@@ -630,3 +630,36 @@ final class SpeedWatch {
         return done.reduce(0.0) { $0 + info.size(of: $1.name) } / copying / 1e6
     }
 }
+
+enum PillTone: Equatable {
+    case neutral, orange, red, green
+}
+
+extension MenuBarStatus {
+    /// The worst state across all jobs: red for file errors or a failed job, orange for a slow card
+    /// or a job gone quiet, and green only in the moments after the last job succeeds.
+    static func tone(for jobs: [Job], slow: Bool, green: Bool, quietAfter: TimeInterval, now: Date) -> PillTone {
+        let going = jobs.filter { !$0.state.isFinished }
+        if jobs.contains(where: { $0.state == .failed }) || going.contains(where: { $0.errors > 0 }) { return .red }
+        let quiet = going.contains { $0.state == .running && !$0.isWaiting && now.timeIntervalSince($0.lastActivity) >= quietAfter }
+        if slow || quiet { return .orange }
+        return green ? .green : .neutral
+    }
+}
+
+/// Where the pill is in its one-second opening, from 0 (closed) to 1 (open with its text): the
+/// circle fades in, then widens, then the text fades in. Closing runs the same curve backwards.
+struct PillShape: Equatable {
+    var alpha: Double
+    var widen: Double
+    var text: Double
+
+    init(openness: Double) {
+        func part(_ start: Double, _ length: Double) -> Double {
+            openness >= start + length ? 1 : max((openness - start) / length, 0)
+        }
+        alpha = part(0, 0.3)
+        widen = 1 - pow(1 - part(0.3, 0.5), 3)
+        text = part(0.8, 0.2)
+    }
+}

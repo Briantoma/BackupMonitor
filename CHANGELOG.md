@@ -4,7 +4,7 @@
 
 - The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
 - The menu bar readout keeps one width for the whole job, sized for the widest numbers it can show, so the icons beside it no longer shift.
-- The readout opens and folds back smoothly, over a quarter of a second, when a job starts and ends.
+- The readout sits on a pill that fades in as a circle, widens and then shows its text, over one second, and folds back the same way. Neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job (until dismissed), green with "Done" for 2 seconds after the last job succeeds. Drawn by the app, so the text is no longer cut short with "…" while the width changes.
 
 ## 1.0.2 - 2026-11-09
 

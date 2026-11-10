@@ -845,9 +845,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     private func setUpMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.imagePosition = .imageLeading
-        // With a fixed width, the wheel stays put and the numbers change beside it.
-        statusItem.button?.alignment = .left
+        pill = MenuBarPill(item: statusItem, idleIcon: Self.idleIcon)
         statusItem.autosaveName = "BackupMonitor"
         statusItem.isVisible = prefs.showMenuBar
         updateStatusItem()
@@ -938,92 +936,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc private func downloadUpdate() { Updater.shared.download() }
 
     /// The drive icon between jobs, the chosen readouts while one runs.
+    private var pill: MenuBarPill!
+    private var followedJob: String?
+    private var greenUntil: Date?
+
+    /// The drive icon between jobs; the pill and the chosen readouts while one runs.
     private func updateStatusItem() {
-        guard let button = statusItem?.button else { return }
-        let jobs = store.shown
-        let text = MenuBarStatus.text(for: jobs, options: prefs.menuBarOptions, now: Date())
-        let job = MenuBarStatus.active(jobs)
-        let image = job != nil && prefs.menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
-        let tint: NSColor? = store.slow.isEmpty ? nil : .systemOrange
-        let length = job == nil ? NSStatusItem.variableLength : runningLength(button)
-        if button.title != text || button.contentTintColor != tint {
-            var attributes: [NSAttributedString.Key: Any] = [.font: Self.readoutFont]
-            if let tint { attributes[.foregroundColor] = tint }
-            button.attributedTitle = NSAttributedString(string: text, attributes: attributes)
-            button.contentTintColor = tint
+        guard statusItem != nil else { return }
+        let jobs = store.shown, now = Date(), options = prefs.menuBarOptions
+        let active = MenuBarStatus.active(jobs)
+        let failed = jobs.contains { $0.state == .failed }
+        // Two seconds of green when the job the menu bar followed was the last one and it succeeded.
+        if let id = followedJob, active == nil, !failed, !jobs.contains(where: { !$0.state.isFinished }),
+           (jobs + store.recentJobs).first(where: { $0.id == id })?.state == .succeeded {
+            greenUntil = now.addingTimeInterval(2)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.05) { [weak self] in self?.updateStatusItem() }
         }
-        if button.image !== image { button.image = image }
-        if length != targetLength { animateLength(to: length, button) }
-    }
-
-    private var targetLength: CGFloat?
-    private var shownLength: CGFloat?
-    private var lengthAnimation: Timer?
-
-    /// Grows and shrinks over a quarter of a second instead of jumping, easing out.
-    private func animateLength(to target: CGFloat, _ button: NSStatusBarButton) {
-        targetLength = target
-        lengthAnimation?.invalidate()
-        // Between jobs the item sizes itself to the drive icon, which is also where a shrink ends.
-        let end = target == NSStatusItem.variableLength ? ceil(button.intrinsicContentSize.width) : target
-        guard let start = shownLength, abs(end - start) >= 1 else {
-            statusItem.length = target
-            shownLength = end
-            return
-        }
-        let began = Date()
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else { return timer.invalidate() }
-                let progress = min(Date().timeIntervalSince(began) / 0.25, 1)
-                let width = start + (end - start) * (1 - pow(1 - progress, 3))
-                self.shownLength = width
-                self.statusItem.length = progress < 1 ? width : target
-                if progress >= 1 { timer.invalidate() }
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        lengthAnimation = timer
-    }
-
-    private static let readoutFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-    private var measured: (options: MenuBarOptions, length: CGFloat)?
-
-    /// One width for the whole job, so the icons beside it don't shift as the numbers change.
-    private func runningLength(_ button: NSStatusBarButton) -> CGFloat {
-        let options = prefs.menuBarOptions
-        if let measured, measured.options == options { return measured.length }
-        let title = button.attributedTitle, image = button.image
-        button.image = options.contains(.wheel) ? Self.wheel(0) : Self.idleIcon
-        let width = MenuBarStatus.widest(options: options).map { sample -> CGFloat in
-            button.attributedTitle = NSAttributedString(string: sample, attributes: [.font: Self.readoutFont])
-            return button.intrinsicContentSize.width
-        }.max() ?? 0
-        button.attributedTitle = title
-        button.image = image
-        let length = ceil(width) + 4
-        measured = (options, length)
-        return length
-    }
-
-    private static func wheel(_ fraction: Double) -> NSImage {
-        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
-            let ring = rect.insetBy(dx: 2, dy: 2)
-            NSColor.black.withAlphaComponent(0.25).setStroke()
-            let track = NSBezierPath(ovalIn: ring)
-            track.lineWidth = 2.5
-            track.stroke()
-            let arc = NSBezierPath()
-            arc.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY), radius: ring.width / 2,
-                          startAngle: 90, endAngle: 90 - 360 * CGFloat(fraction), clockwise: true)
-            arc.lineWidth = 2.5
-            arc.lineCapStyle = .round
-            NSColor.black.setStroke()
-            arc.stroke()
-            return true
-        }
-        image.isTemplate = true
-        image.accessibilityDescription = "\(Format.percent(fraction))% done"
-        return image
+        followedJob = active?.id
+        let green = (greenUntil ?? .distantPast) > now && active == nil
+        let samples = MenuBarStatus.widest(options: options)
+        let hasText = samples.contains { !$0.isEmpty }
+        let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, now: now)
+        let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
+        pill.update(open: active != nil || failed || green, text: text,
+                    fraction: green ? 1 : active?.fraction, wheel: options.contains(.wheel), tone: tone,
+                    fullWidth: pill.fullWidth(texts: samples + (hasText ? ["Failed", "Done"] : []), wheel: options.contains(.wheel)))
+        statusItem.button?.setAccessibilityLabel(text.isEmpty ? "Backup Monitor" : "Backup Monitor, \(text)")
     }
 }
