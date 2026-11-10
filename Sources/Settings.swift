@@ -204,11 +204,18 @@ struct SettingsView: View {
                 Toggle("Silverstack's logs can't be read", isOn: $prefs.notifyLogs)
             }
             Section {
+                if let problem = updater.installProblem {
+                    Text(problem).font(.caption).foregroundStyle(.red)
+                }
                 Toggle("Open at Login", isOn: Binding(get: { store.opensAtLogin }, set: { _ in store.toggleLogin() }))
                 HStack {
                     if let update = updater.available {
                         Text("Version \(update.version) is available")
                         Spacer()
+                        if updater.canInstall {
+                            Button(updater.installing ? "Installing…" : "Install and Relaunch") { updater.install() }
+                                .disabled(updater.installing)
+                        }
                         Button("Download") { updater.download() }
                     } else {
                         Text("Version \(version) · \(updater.result ?? "Checking…")").foregroundStyle(.secondary)

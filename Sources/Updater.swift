@@ -2,7 +2,8 @@ import AppKit
 import UserNotifications
 
 /// Asks GitHub for the latest release once a day, and when Settings opens (at most hourly).
-/// A newer version shows "Update available" in the panel and one notification per version.
+/// A newer version shows in Settings and the menu, with one notification per version, and can be
+/// installed in place, with a browser download when that isn't possible.
 @MainActor
 final class Updater: ObservableObject {
     static let shared = Updater()
@@ -16,6 +17,9 @@ final class Updater: ObservableObject {
     @Published private(set) var available: Release?
     /// The outcome of the last check, shown in Settings: nil while checking or before the first one.
     @Published private(set) var result: String?
+    @Published private(set) var installing = false
+    @Published private(set) var installProblem: String?
+    var canInstall: Bool { UpdateInstaller.canReplaceSelf }
     private var lastCheck = Date.distantPast
     private var timer: Timer?
 
@@ -50,6 +54,23 @@ final class Updater: ObservableObject {
         if let available { notifyOnce(available) }
     }
 
+    /// Downloads, checks and swaps in the new version, then quits so the helper can open it.
+    func install() {
+        guard let release = available, !installing else { return }
+        guard canInstall else { return download() }
+        installing = true
+        installProblem = nil
+        Task {
+            do {
+                try await UpdateInstaller.install(from: release.download, newerThan: current)
+                NSApp.terminate(nil)
+            } catch {
+                installing = false
+                installProblem = "Couldn't install: \(error.localizedDescription). Use Download instead."
+            }
+        }
+    }
+
     /// The browser downloads the DMG, so macOS checks the notarized app when it is first opened.
     func download() {
         if let url = available?.download { NSWorkspace.shared.open(url) }
@@ -81,7 +102,7 @@ final class Updater: ObservableObject {
         UserDefaults.standard.set(release.version, forKey: "notifiedUpdate")
         let content = UNMutableNotificationContent()
         content.title = "Backup Monitor \(release.version) is available"
-        content.body = "Open Backup Monitor Settings and click Download."
+        content.body = "Open Backup Monitor Settings or its menu to install it."
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "update-\(release.version)", content: content, trigger: nil))
     }

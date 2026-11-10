@@ -963,7 +963,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if let update = Updater.shared.available {
-            menu.addItem(withTitle: "Download Backup Monitor \(update.version)…", action: #selector(downloadUpdate), keyEquivalent: "").target = self
+            let updater = Updater.shared
+            let title = updater.installing ? "Installing Backup Monitor \(update.version)…"
+                : updater.canInstall ? "Install Backup Monitor \(update.version) and Relaunch" : "Download Backup Monitor \(update.version)…"
+            let item = menu.addItem(withTitle: title, action: updater.installing ? nil : #selector(downloadUpdate), keyEquivalent: "")
+            item.target = self
             menu.addItem(.separator())
         }
         if let problem = store.logProblem {
@@ -1036,7 +1040,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     @objc private func showAbout() { About.show() }
 
-    @objc private func downloadUpdate() { Updater.shared.download() }
+    /// Installs in place where it can, otherwise opens the download.
+    @objc private func downloadUpdate() { Updater.shared.install() }
 
     /// The drive icon between jobs, the chosen readouts while one runs.
     private var pill: MenuBarPill!

@@ -41,7 +41,7 @@ A card's group comes from the entries in Settings, separated by commas: a single
 
 Island and menu bar icon on or off (one of them always stays on), menu bar readouts, entries and minimum speed per group, mounted volumes to hide, notifications (slow copy on by default; job finished, failed or stopped and unreadable logs off, as Silverstack has its own), Open at Login, Show Demo, version and About. Settings opens on first launch, and whenever the app is opened again from Finder or Applications, which is the way back when the icon is hidden. While Settings or About is open, the app shows in the Dock and Cmd-Tab.
 
-The app checks the latest GitHub release once a day. A newer version shows in Settings and at the top of the menu, with a Download button, and one notification.
+The app checks the latest GitHub release once a day. A newer version shows in Settings and at the top of the menu, with one notification. Install and Relaunch downloads it, checks that it is Backup Monitor, newer, signed by Oz Color and accepted by macOS (notarised), replaces the app and reopens it; nothing is touched if any check fails. Where the app can't replace itself (run from the DMG, or from a folder it can't write to), Download opens the DMG in the browser instead.
 
 ## How it reads Silverstack
 
