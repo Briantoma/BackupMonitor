@@ -113,7 +113,10 @@ final class Store: ObservableObject {
 
     func start() {
         findSources()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        // Common modes, so progress keeps moving while the menu bar menu is open.
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
         tick()
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
@@ -279,7 +282,7 @@ final class Store: ObservableObject {
         queued.info = JobInfo(title: "DEMO_REEL_A001", totalTasks: 24)
         var fraction = 0.0
         demoJobs = [job(0), queued]
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+        let demo = Timer(timeInterval: 0.1, repeats: true) { [weak self] timer in
             guard let self else { return timer.invalidate() }
             fraction = min(fraction + 0.01, 1)
             self.demoJobs = fraction < 1 ? [job(fraction), queued] : [job(fraction)]
@@ -288,6 +291,7 @@ final class Store: ObservableObject {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.demoJobs = nil }
             }
         }
+        RunLoop.main.add(demo, forMode: .common)
     }
 }
 
@@ -324,15 +328,44 @@ struct IslandMetrics {
     }
 }
 
+/// The island's colours, and the menu's: the same rows show in both.
+struct Palette {
+    var text, detail, dim, faint, track, button: Color
+
+    static let island = Palette(text: .white, detail: .white.opacity(0.72), dim: .white.opacity(0.6),
+                                faint: .white.opacity(0.5), track: .white.opacity(0.18), button: .white.opacity(0.75))
+    static let menu = Palette(text: .primary, detail: .secondary, dim: .secondary,
+                              faint: Color(nsColor: .tertiaryLabelColor), track: .primary.opacity(0.12), button: .secondary)
+}
+
 struct IslandView: View {
     @ObservedObject var store: Store
     let metrics: IslandMetrics
+    /// The job rows alone, for the menu bar menu.
+    var inMenu = false
+    private var palette: Palette { inMenu ? .menu : .island }
 
     private var expanded: Bool {
         store.isHovering || store.shown.contains { $0.state == .failed }
     }
 
     var body: some View {
+        if inMenu { menuContent } else { island }
+    }
+
+    private var menuContent: some View {
+        VStack(spacing: 8) {
+            ForEach(store.running.prefix(3)) { row($0).frame(height: 84) }
+            if !store.queued.isEmpty { queuedList }
+            if !store.recent.isEmpty { recentList }
+        }
+        .foregroundColor(palette.text)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(width: 400)
+    }
+
+    private var island: some View {
         VStack(spacing: 0) {
             Group {
                 if expanded { expandedContent } else { collapsedContent }
@@ -390,7 +423,7 @@ struct IslandView: View {
 
     private func ring(_ job: Job, size: CGFloat) -> some View {
         ZStack {
-            Circle().stroke(Color.white.opacity(0.18), lineWidth: 3)
+            Circle().stroke(palette.track, lineWidth: 3)
             Circle()
                 .trim(from: 0, to: CGFloat(job.fraction ?? 0))
                 .stroke(tint(job), style: StrokeStyle(lineWidth: 3, lineCap: .round))
@@ -490,7 +523,7 @@ struct IslandView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Queued")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.white.opacity(0.5))
+                .foregroundColor(palette.faint)
                 .frame(height: 18, alignment: .top)
             ForEach(store.queued) { queuedRow($0).frame(height: 26) }
         }
@@ -500,12 +533,12 @@ struct IslandView: View {
         HStack(spacing: 8) {
             Image(systemName: "clock")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(palette.dim)
                 .frame(width: 16)
             Text(job.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             Text(queuedDetail(job)).font(.system(size: 11.5).monospacedDigit())
-                .foregroundColor(.white.opacity(0.6)).lineLimit(1).fixedSize()
+                .foregroundColor(palette.dim).lineLimit(1).fixedSize()
         }
     }
 
@@ -522,7 +555,7 @@ struct IslandView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Recently completed")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.white.opacity(0.5))
+                .foregroundColor(palette.faint)
                 .frame(height: 18, alignment: .top)
             ForEach(store.recent) { recentRow($0).frame(height: 26) }
         }
@@ -545,7 +578,7 @@ struct IslandView: View {
             Text(row.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             Text(recentDetail(row)).font(.system(size: 11.5).monospacedDigit())
-                .foregroundColor(.white.opacity(0.6)).lineLimit(1).fixedSize()
+                .foregroundColor(palette.dim).lineLimit(1).fixedSize()
         }
     }
 
@@ -576,7 +609,7 @@ struct IslandView: View {
                 Spacer(minLength: 8)
                 if job.state == .failed {
                     Button("Dismiss") { store.dismiss(job) }.buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.75))
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(palette.button)
                 }
                 Text(shortStatus(job))
                     .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
@@ -584,16 +617,16 @@ struct IslandView: View {
             }
             // Drawn by hand because the system bar turns grey in a window that isn't key.
             GeometryReader { bar in
-                Capsule().fill(Color.white.opacity(0.18))
+                Capsule().fill(palette.track)
                     .overlay(alignment: .leading) {
                         Capsule().fill(tint(job)).frame(width: bar.size.width * CGFloat(job.fraction ?? 0))
                     }
             }
             .frame(height: 6)
             Text(detailLine(job)).font(.system(size: 11.5).monospacedDigit())
-                .foregroundColor(.white.opacity(0.72)).lineLimit(1)
+                .foregroundColor(palette.detail).lineLimit(1)
             Text(fileLine(job)).font(.system(size: 11.5))
-                .foregroundColor(job.lastError == nil && store.slowCard(job) == nil ? .white.opacity(0.5) : .orange)
+                .foregroundColor(job.lastError == nil && store.slowCard(job) == nil ? palette.faint : .orange)
                 .lineLimit(1).truncationMode(.middle)
         }
     }
@@ -834,6 +867,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             let warning = menu.addItem(withTitle: problem, action: nil, keyEquivalent: "")
             warning.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
             warning.isEnabled = false
+            menu.addItem(.separator())
+        }
+        // The island's job rows, live while the menu is open. Jobs starting meanwhile show at the next opening.
+        if !store.shown.isEmpty || !store.recent.isEmpty {
+            let rows = NSHostingView(rootView: IslandView(store: store, metrics: metrics, inMenu: true))
+            rows.frame.size = rows.fittingSize
+            let item = NSMenuItem()
+            item.view = rows
+            menu.addItem(item)
             menu.addItem(.separator())
         }
         let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")

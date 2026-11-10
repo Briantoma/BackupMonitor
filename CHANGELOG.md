@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3 - 2026-11-10
+
+- The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
+
 ## 1.0.2 - 2026-11-09
 
 - Check for Updates button at the bottom of Settings, with the result of the last check.
