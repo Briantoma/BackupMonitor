@@ -632,6 +632,13 @@ extension MenuBarStatus {
         }
         return part
     }
+
+    /// Numbers sit at the right of their room, so the units ("%", "MB/s", "s") stay in one place.
+    static func alignsRight(_ part: String) -> Bool {
+        if part.hasSuffix("%") || part.hasSuffix("/s") { return true }
+        guard let last = part.split(separator: " ").last, let unit = last.last, "hms".contains(unit) else { return false }
+        return last.dropLast().allSatisfy(\.isNumber) && last.count > 1
+    }
 }
 
 enum PillTone: Equatable {

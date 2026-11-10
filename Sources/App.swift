@@ -196,7 +196,8 @@ final class Store: ObservableObject {
         let combined = sources.flatMap(\.tracker.jobs)
         if combined.map(\.signature) != jobs.map(\.signature) { jobs = combined }
         let prefs = Preferences.shared
-        let nowSlow = speedWatch.update(jobs: combined, rules: prefs.rules, now: Date())
+        var nowSlow = speedWatch.update(jobs: combined, rules: prefs.rules, now: Date())
+        if let demo = demoSlow() { nowSlow.append(demo) }
         if nowSlow != slow { slow = nowSlow }
         for card in nowSlow where notifiedSlow.insert(card.key).inserted && prefs.notifySlow {
             Notifier.post(id: "slow-\(card.key)", title: "Slow copy: \(card.card)",
@@ -267,7 +268,21 @@ final class Store: ObservableObject {
         tick()
     }
 
+    static let demoCard = "A001"
+
+    /// The demo copies from a camera card at its shown speed, so it warns when that is under the
+    /// camera minimum in Settings, as a real copy would.
+    private func demoSlow() -> SlowCard? {
+        guard let demo = demoJobs?.first(where: { $0.id == "demo" }), demo.state == .running, demo.phase == "copy",
+              let speed = demo.speed?.split(separator: " ").first.flatMap({ Double($0) }) else { return nil }
+        let rules = Preferences.shared.rules
+        let group = rules.group(of: Self.demoCard), minimum = rules.minimum[group] ?? 0
+        return speed < minimum ? SlowCard(jobID: demo.id, card: Self.demoCard, group: group, speed: speed, minimum: minimum) : nil
+    }
+
     func runDemo() {
+        // Each demo may warn again.
+        notifiedSlow.remove("demo|\(Self.demoCard)")
         let started = Date()
         func job(_ fraction: Double) -> Job {
             var job = Job(id: "demo", url: "", kind: "Copy", workflow: "Demo Workflow",
@@ -1031,7 +1046,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// The drive icon between jobs; the pill and the chosen readouts while one runs.
     private func updateStatusItem() {
         guard statusItem != nil else { return }
-        let jobs = store.shown, now = Date(), options = prefs.menuBarOptions
+        let jobs = store.shown, now = Date(), options = prefs.menuBarOptions.subtracting(dropped)
         let active = MenuBarStatus.active(jobs)
         let failed = jobs.contains { $0.state == .failed }
         // Two seconds of green when the job the menu bar followed was the last one and it succeeded.
@@ -1045,8 +1060,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let hasText = !options.subtracting(.wheel).isEmpty
         let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, now: now)
         let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
-        pill.update(open: active != nil || failed || green, text: text,
+        let busy = active != nil || failed || green
+        // With no readouts chosen, or none that fit, the drive icon itself takes the colour.
+        pill.iconTint = !busy ? nil : [.orange: NSColor.systemOrange, .red: .systemRed, .green: .systemGreen][tone]
+        pill.update(open: busy && !options.isEmpty, text: text,
                     fraction: green ? 1 : active?.fraction, wheel: options.contains(.wheel), tone: tone)
         statusItem.button?.setAccessibilityLabel(text.isEmpty ? "Backup Monitor" : "Backup Monitor, \(text)")
+        if !busy {
+            dropped = []
+        } else if prefs.showMenuBar && pill.isSettled && !options.isEmpty && itemIsHidden,
+                  let next = Self.dropOrder.first(where: { options.contains($0) }) {
+            dropped.insert(next)
+            DispatchQueue.main.async { [weak self] in self?.updateStatusItem() }
+        }
+    }
+
+    /// Readouts left out, for this job only, because the pill didn't fit beside the notch.
+    private var dropped: MenuBarOptions = []
+    private static let dropOrder: [MenuBarOptions] = [.jobCount, .wheel, .percent, .speed, .remaining]
+
+    /// Behind the notch, or pushed off every screen when the menu bar is full.
+    private var itemIsHidden: Bool {
+        guard let frame = statusItem.button?.window?.frame else { return false }
+        let middle = NSPoint(x: frame.midX, y: frame.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(middle) }) else { return true }
+        guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { return false }
+        let notchStart = screen.frame.minX + left.width, notchEnd = screen.frame.maxX - right.width
+        return frame.minX < notchEnd && frame.maxX > notchStart
     }
 }

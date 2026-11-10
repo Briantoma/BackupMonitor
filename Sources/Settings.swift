@@ -129,9 +129,14 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Show") {
-                // The last of the two can't be turned off, or nothing would be left to reach Settings.
-                Toggle("Island at the top of the screen", isOn: $prefs.showIsland).disabled(prefs.showIsland && !prefs.showMenuBar)
-                Toggle("Menu bar icon", isOn: $prefs.showMenuBar).disabled(prefs.showMenuBar && !prefs.showIsland)
+                // The last of the two can't be turned off, or nothing would be left to reach Settings: it
+                // beeps and stays on, rather than looking greyed out.
+                Toggle("Island at the top of the screen", isOn: Binding(get: { prefs.showIsland }, set: { on in
+                    if on || prefs.showMenuBar { prefs.showIsland = on } else { NSSound.beep() }
+                }))
+                Toggle("Menu bar icon", isOn: Binding(get: { prefs.showMenuBar }, set: { on in
+                    if on || prefs.showIsland { prefs.showMenuBar = on } else { NSSound.beep() }
+                }))
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Menu bar shows")
                     HStack {

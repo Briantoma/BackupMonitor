@@ -30,6 +30,12 @@ final class MenuBarPill: NSObject {
     /// When the closing began: the text fades out before the pill starts to shrink.
     private var closing: Date?
     private var isResizing: Bool { Date().timeIntervalSince(resizeStart) < Self.resize }
+    /// Not moving, so the item's place in the menu bar is final.
+    var isSettled: Bool { frames == nil }
+    /// The drive icon's colour when there are no readouts to show, nil for the usual look.
+    var iconTint: NSColor? {
+        didSet { if iconTint != oldValue && frames == nil { apply() } }
+    }
 
     init(item: NSStatusItem, idleIcon: NSImage?) {
         self.item = item
@@ -153,6 +159,7 @@ final class MenuBarPill: NSObject {
         guard let button = item.button else { return }
         view.shape = PillShape(openness: openness)
         view.scale = button.window?.backingScaleFactor ?? 2
+        button.contentTintColor = openness == 0 ? iconTint : nil
         if openness == 0 {
             if button.image !== idleIcon { button.image = idleIcon }
             if item.length != NSStatusItem.variableLength { item.length = NSStatusItem.variableLength }
@@ -204,14 +211,14 @@ final class PillPicture {
 
     /// Each part of the text with the room it keeps, "· " included after the first, so numbers
     /// changing length don't resize the pill or move the parts after them.
-    static func slots(_ text: String) -> [(piece: String, width: CGFloat, alignRight: Bool)] {
+    static func slots(_ text: String) -> [(lead: String, part: String, width: CGFloat, alignRight: Bool)] {
         func width(_ string: String) -> CGFloat {
             NSAttributedString(string: string, attributes: [.font: MenuBarPill.font]).size().width
         }
         return text.components(separatedBy: " · ").enumerated().map { index, part in
             let lead = index == 0 ? "" : " · "
             let room = max(width(lead + part), width(lead + MenuBarStatus.room(for: part)))
-            return (lead + part, room, part.hasSuffix("%"))
+            return (lead, part, room, MenuBarStatus.alignsRight(part))
         }
     }
 
@@ -246,13 +253,13 @@ final class PillPicture {
         var x = pill.minX + (wheel ? diameter : Self.textInset)
         let reach = pill.maxX - Self.textInset
         for (index, slot) in Self.slots(text).enumerated() where !text.isEmpty {
-            let piece = slot.piece
-            let size = NSAttributedString(string: piece, attributes: [.font: MenuBarPill.font]).size()
+            let size = NSAttributedString(string: slot.lead + slot.part, attributes: [.font: MenuBarPill.font]).size()
             let fits = x + slot.width <= reach + 4
             if !fits { shownSince[index] = nil } else if shownSince[index] == nil { shownSince[index] = now }
             let alpha = shownSince[index].map { min(now.timeIntervalSince($0) / MenuBarPill.textFade, 1) * textOut } ?? 0
             if alpha > 0 {
-                NSAttributedString(string: piece, attributes: [
+                // A number and its separator sit at the right end of the room, so the units stay put.
+                NSAttributedString(string: slot.lead + slot.part, attributes: [
                     .font: MenuBarPill.font, .foregroundColor: ink.withAlphaComponent(alpha),
                 ]).draw(at: NSPoint(x: slot.alignRight ? x + slot.width - size.width : x, y: pill.midY - size.height / 2))
             }

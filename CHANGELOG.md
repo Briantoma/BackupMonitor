@@ -3,8 +3,12 @@
 ## 1.0.3 - 2026-11-10
 
 - The island appears with the same timing as the menu bar pill: it fades in, grows out of the notch, then its ring and text fade in; when it goes, the contents fade out and it shrinks back into the notch. Opened by hovering the notch between jobs, it still shows and hides at once.
+- If the pill would be hidden by the notch or pushed off a full menu bar, it leaves out the number of jobs, then the wheel, then the percentage, then the speed, for that job.
+- With no readouts chosen (or none that fit), the drive icon itself takes the job's colour: orange, red or green.
+- Show Demo copies from a sample camera card and shows the slow warning and notification when its speed is under the camera minimum.
+- The Island and Menu bar icon switches no longer look greyed out; switching off the last one beeps and keeps it on.
 - The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
-- The menu bar readout fits its text, and grows or shrinks over half a second when the text gets longer or shorter, so the icons beside it move gently instead of jumping. A longer text waits until the pill has room for it, so nothing is ever cut off. Each part keeps room for two-digit percentages and seconds and for speeds up to 999.9 MB/s, so the pill changes size far less often.
+- The menu bar readout fits its text, and grows or shrinks over half a second when the text gets longer or shorter, so the icons beside it move gently instead of jumping. A longer text waits until the pill has room for it, so nothing is ever cut off. Each part keeps room for two-digit percentages and seconds and for speeds up to 999.9 MB/s, so the pill changes size far less often. Numbers sit at the right of their room, so "%", "MB/s" and "s" stay in place.
 - The readout sits on a pill that fades in as a circle and widens over one second, each part of the text (percentage, speed, time) fading in once it fits whole; at the end the text fades out, then the pill folds back the same way. In step with the display, drawn on whole pixels, and drawn as the button's own image, so menu bar managers like Ice never show their background beside it while it changes size. Neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job (until dismissed), green with "Done" for 2 seconds after the last job succeeds. Drawn by the app, so the text is no longer cut short with "…" while the width changes.
 
 ## 1.0.2 - 2026-11-09

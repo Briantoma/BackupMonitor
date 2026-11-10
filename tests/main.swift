@@ -293,6 +293,8 @@ check(MenuBarStatus.room(for: "2m 10s"), "2m 10s", "two-digit seconds")
 check(MenuBarStatus.room(for: "1h 2m"), "1h 2m", "hours and minutes")
 check(MenuBarStatus.room(for: "2 jobs"), "2 jobs", "job count")
 check(MenuBarStatus.room(for: "Done"), "Done", "words")
+check(["9%", "3.21 GB/s", "1m 5s", "58s", "1h 2m", "2 jobs", "Done"].map(MenuBarStatus.alignsRight),
+      [true, true, true, true, true, false, false], "numbers align right, words left")
 
 // The pill: circle first, then the width, then the text.
 check(PillShape(openness: 0), PillShape(openness: -1), "closed")
