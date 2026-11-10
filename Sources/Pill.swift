@@ -11,8 +11,6 @@ final class MenuBarPill: NSObject {
     /// As slow as the widening, so a new digit never makes the menu bar jump.
     static let resize: TimeInterval = 0.5
     static let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-    /// Room left between the pill and the items beside it.
-    static let margin: CGFloat = 3
 
     private let item: NSStatusItem
     private let idleIcon: NSImage?
@@ -144,8 +142,9 @@ final class MenuBarPill: NSObject {
         } else {
             view.isHidden = false
             if item.button?.image != nil { item.button?.image = nil }
+            // Exactly the pill: any spare width shows macOS's grey item background beside it.
             // Whole pixels only, so the menu bar isn't relaid out for every fraction of a point.
-            let length = view.pixel(view.pillWidth + Self.margin * 2)
+            let length = view.pixel(view.pillWidth)
             if item.length != length { item.length = length }
         }
     }
@@ -177,9 +176,8 @@ final class PillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let mix = min(Date().timeIntervalSince(toneChanged) / MenuBarPill.toneFade, 1)
         let (fill, ink) = Self.blend(previousTone, tone, mix)
-        let width = pixel(pillWidth)
-        let pill = NSRect(x: pixel((bounds.width - width) / 2), y: pixel((bounds.height - diameter) / 2),
-                          width: width, height: diameter)
+        // The item's actual width, which can trail the animation by a frame, so the pill always covers it.
+        let pill = NSRect(x: 0, y: pixel((bounds.height - diameter) / 2), width: max(bounds.width, diameter), height: diameter)
         let outline = NSBezierPath(roundedRect: pill, xRadius: diameter / 2, yRadius: diameter / 2)
         fill.withAlphaComponent(fill.alphaComponent * shape.alpha).setFill()
         outline.fill()
