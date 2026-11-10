@@ -786,10 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private func layoutPanel() {
         let jobs = store.shown
         let recent = store.isHovering ? store.recent.count : 0
-        guard prefs.showIsland, !jobs.isEmpty || store.isHovering else {
-            panel.orderOut(nil)
-            return
-        }
+        guard prefs.showIsland, !jobs.isEmpty || store.isHovering else { return fadeIsland(in: false) }
         let expanded = store.isHovering || jobs.contains { $0.state == .failed }
         let size = expanded
             ? NSSize(width: metrics.expandedWidth,
@@ -801,7 +798,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             : NSSize(width: metrics.collapsedWidth, height: metrics.height)
         let frame = topCentered(size)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
-        if !panel.isVisible { panel.orderFrontRegardless() }
+        fadeIsland(in: true)
+    }
+
+    private var islandShown = false
+    private var islandFades = 0
+
+    /// Fades the island in or out instead of popping it on and off. A fade out is called off
+    /// if the island is needed again before it ends.
+    private func fadeIsland(in show: Bool) {
+        guard show != islandShown else { return }
+        islandShown = show
+        islandFades += 1
+        let fade = islandFades
+        if show && !panel.isVisible {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            panel.animator().alphaValue = show ? 1 : 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !show, fade == self.islandFades else { return }
+                self.panel.orderOut(nil)
+            }
+        })
     }
 
     /// Shown while Settings or About is open. Without it the windows get no Cmd-W, and the text

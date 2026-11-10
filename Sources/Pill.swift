@@ -8,6 +8,7 @@ import QuartzCore
 final class MenuBarPill: NSObject {
     static let duration: TimeInterval = 1
     static let toneFade: TimeInterval = 0.3
+    static let textFade: TimeInterval = 0.25
     /// As slow as the widening, so a new digit never makes the menu bar jump.
     static let resize: TimeInterval = 0.5
     static let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
@@ -24,6 +25,8 @@ final class MenuBarPill: NSObject {
     private var resizeStart = Date.distantPast
     /// A longer text waits until the pill has grown to fit it.
     private var waitingText: String?
+    /// When the closing began: the text fades out before the pill starts to shrink.
+    private var closing: Date?
     private var isResizing: Bool { Date().timeIntervalSince(resizeStart) < Self.resize }
 
     init(item: NSStatusItem, idleIcon: NSImage?) {
@@ -48,7 +51,13 @@ final class MenuBarPill: NSObject {
 
     func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone) {
         target = open ? 1 : 0
-        // Closing keeps the last text and width, so the text folds away rather than vanishing.
+        if open {
+            closing = nil
+            view.textOut = 1
+        } else if closing == nil && openness > 0 {
+            closing = Date()
+        }
+        // Closing keeps the last text and width, so the text fades away rather than vanishing.
         guard open || openness == 0 else { return keepAnimating() }
         view.fraction = fraction ?? 0
         view.wheel = wheel
@@ -87,7 +96,7 @@ final class MenuBarPill: NSObject {
 
     private func keepAnimating() {
         view.needsDisplay = true
-        if frames == nil && (openness != target || view.isFading || isResizing) { startAnimating() }
+        if frames == nil && (openness != target || view.isFading || view.isTextFading || isResizing) { startAnimating() }
         if frames == nil { apply() }
     }
 
@@ -121,7 +130,19 @@ final class MenuBarPill: NSObject {
         let now = Date()
         let move = now.timeIntervalSince(lastFrame) / Self.duration
         lastFrame = now
-        openness = target > openness ? min(openness + move, target) : max(openness - move, target)
+        if let closing, !view.text.isEmpty {
+            view.textOut = max(1 - now.timeIntervalSince(closing) / Self.textFade, 0)
+        }
+        if target > openness {
+            openness = min(openness + move, target)
+        } else if view.textOut == 0 || view.text.isEmpty || closing == nil {
+            openness = max(openness - move, target)
+        }
+        if openness == 0 {
+            view.shownSince = [:]
+            view.textOut = 1
+            closing = nil
+        }
         let resized = min(now.timeIntervalSince(resizeStart) / Self.resize, 1)
         view.fullWidth = resizeFrom + (resizeTo - resizeFrom) * (1 - pow(1 - resized, 3))
         if resized >= 1, let text = waitingText {
@@ -129,7 +150,7 @@ final class MenuBarPill: NSObject {
             waitingText = nil
         }
         apply()
-        if openness == target && !view.isFading && !isResizing && waitingText == nil { stopAnimating() }
+        if openness == target && !view.isFading && !view.isTextFading && !isResizing && waitingText == nil { stopAnimating() }
     }
 
     private func apply() {
@@ -166,6 +187,13 @@ final class PillView: NSView {
     var diameter: CGFloat { min(NSStatusBar.system.thickness - 4, 22) }
     var pillWidth: CGFloat { diameter + (fullWidth - diameter) * shape.widen }
     var isFading: Bool { Date().timeIntervalSince(toneChanged) < MenuBarPill.toneFade }
+    /// When each part of the text first fitted whole, for its fade in.
+    var shownSince: [Int: Date] = [:]
+    /// The whole text's opacity while it fades out at the end of a job.
+    var textOut: Double = 1
+    var isTextFading: Bool {
+        textOut > 0 && textOut < 1 || shownSince.values.contains { Date().timeIntervalSince($0) < MenuBarPill.textFade }
+    }
 
     /// Rounded to the screen's pixels: an edge between two pixels blends into the menu bar as a grey rim.
     func pixel(_ value: CGFloat) -> CGFloat {
@@ -199,14 +227,17 @@ final class PillView: NSView {
             arc.stroke()
         }
 
-        // Each part ("42%", "· 466.6 MB/s", "· 2m 10s") shows once it fits whole in the pill.
+        // Each part ("42%", "· 466.6 MB/s", "· 2m 10s") fades in once it fits whole in the pill.
+        let now = Date()
         var x = pill.minX + (wheel ? diameter : Self.textInset)
         let reach = pill.maxX - Self.textInset
         for (index, part) in text.components(separatedBy: " · ").enumerated() where !text.isEmpty {
             let piece = (index == 0 ? "" : " · ") + part
             let plain = NSAttributedString(string: piece, attributes: [.font: MenuBarPill.font])
             let size = plain.size()
-            let alpha = PillShape.partAlpha(end: x + size.width, reach: reach)
+            let fits = x + size.width <= reach + 4
+            if !fits { shownSince[index] = nil } else if shownSince[index] == nil { shownSince[index] = now }
+            let alpha = shownSince[index].map { min(now.timeIntervalSince($0) / MenuBarPill.textFade, 1) * textOut } ?? 0
             if alpha > 0 {
                 NSAttributedString(string: piece, attributes: [
                     .font: MenuBarPill.font, .foregroundColor: ink.withAlphaComponent(alpha),

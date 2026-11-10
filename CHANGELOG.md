@@ -2,9 +2,10 @@
 
 ## 1.0.3 - 2026-11-10
 
+- The island fades in and out instead of popping on and off.
 - The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
 - The menu bar readout fits its text, and grows or shrinks over half a second when the text gets longer or shorter, so the icons beside it move gently instead of jumping. A longer text waits until the pill has room for it, so nothing is ever cut off.
-- The readout sits on a pill that fades in as a circle and widens over one second, each part of the text (percentage, speed, time) appearing once it fits whole, and folds back the same way. In step with the display, and drawn on whole pixels so coloured pills keep clean edges. Neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job (until dismissed), green with "Done" for 2 seconds after the last job succeeds. Drawn by the app, so the text is no longer cut short with "…" while the width changes.
+- The readout sits on a pill that fades in as a circle and widens over one second, each part of the text (percentage, speed, time) fading in once it fits whole; at the end the text fades out, then the pill folds back the same way. In step with the display, and drawn on whole pixels so coloured pills keep clean edges. Neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job (until dismissed), green with "Done" for 2 seconds after the last job succeeds. Drawn by the app, so the text is no longer cut short with "…" while the width changes.
 
 ## 1.0.2 - 2026-11-09
 

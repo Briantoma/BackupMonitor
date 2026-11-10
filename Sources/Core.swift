@@ -637,7 +637,8 @@ extension MenuBarStatus {
 }
 
 /// Where the pill is in its one-second opening, from 0 (closed) to 1 (open): the circle fades in,
-/// then widens, each part of the text showing once it fits whole. Closing runs it backwards.
+/// then widens, each part of the text fading in once it fits whole. Closing fades the text out
+/// first, then runs the same curve backwards.
 struct PillShape: Equatable {
     var alpha: Double
     var widen: Double
@@ -648,11 +649,5 @@ struct PillShape: Equatable {
         }
         alpha = part(0, 0.3)
         widen = 1 - pow(1 - part(0.3, 0.7), 3)
-    }
-
-    /// How visible each part of the text is, from where it ends and how far the pill reaches:
-    /// nothing until the whole part fits, then a fade over the next few points of widening.
-    static func partAlpha(end: Double, reach: Double, fade: Double = 6) -> Double {
-        min(max((reach + fade - end) / fade, 0), 1)
     }
 }
