@@ -287,9 +287,11 @@ check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), 
 check(PillShape(openness: 0), PillShape(openness: -1), "closed")
 check(PillShape(openness: 0.15).alpha, 0.5, "circle fading in")
 check(PillShape(openness: 0.3).widen, 0, "still a circle when fully faded in")
-check(PillShape(openness: 0.8).widen, 1, "full width before the text")
-check(PillShape(openness: 0.8).text, 0, "text only after the widening")
 check(PillShape(openness: 1), PillShape(openness: 2), "open")
+check(PillShape(openness: 1).widen, 1, "full width at the end")
+check(PillShape.partAlpha(end: 120, reach: 100), 0, "a part that doesn't fit stays hidden")
+check(PillShape.partAlpha(end: 100, reach: 97), 0.5, "fading in once it fits")
+check(PillShape.partAlpha(end: 100, reach: 100), 1, "whole once there's room")
 var quiet = working
 quiet.lastActivity = at.addingTimeInterval(-25)
 check(MenuBarStatus.tone(for: [working], slow: false, green: false, quietAfter: 20, now: at), .neutral, "copying normally")

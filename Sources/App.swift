@@ -958,8 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, now: now)
         let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
         pill.update(open: active != nil || failed || green, text: text,
-                    fraction: green ? 1 : active?.fraction, wheel: options.contains(.wheel), tone: tone,
-                    fullWidth: pill.fullWidth(text: text, wheel: options.contains(.wheel)))
+                    fraction: green ? 1 : active?.fraction, wheel: options.contains(.wheel), tone: tone)
         statusItem.button?.setAccessibilityLabel(text.isEmpty ? "Backup Monitor" : "Backup Monitor, \(text)")
     }
 }

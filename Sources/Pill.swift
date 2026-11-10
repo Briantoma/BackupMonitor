@@ -1,11 +1,11 @@
 import AppKit
+import QuartzCore
 
 /// The menu bar readout while a job runs: a pill that fades in as a circle, widens to fit the
 /// numbers, follows them as they get longer or shorter, and folds back the same way, coloured by
-/// how the copy is going. Drawn by hand, so the
-/// text is never cut short with "…" while the width changes.
+/// how the copy is going. Drawn by hand, so the text is never cut short with "…".
 @MainActor
-final class MenuBarPill {
+final class MenuBarPill: NSObject {
     static let duration: TimeInterval = 1
     static let toneFade: TimeInterval = 0.3
     /// As slow as the widening, so a new digit never makes the menu bar jump.
@@ -19,18 +19,19 @@ final class MenuBarPill {
     private let view = PillView()
     private var openness: Double = 0
     private var target: Double = 0
-    private var timer: Timer?
+    private var frames: AnyObject?
     private var lastFrame = Date()
     private var resizeFrom: CGFloat = 0
     private var resizeTo: CGFloat = 0
     private var resizeStart = Date.distantPast
+    /// A longer text waits until the pill has grown to fit it.
+    private var waitingText: String?
     private var isResizing: Bool { Date().timeIntervalSince(resizeStart) < Self.resize }
-
-    var diameter: CGFloat { view.diameter }
 
     init(item: NSStatusItem, idleIcon: NSImage?) {
         self.item = item
         self.idleIcon = idleIcon
+        super.init()
         item.button?.image = idleIcon
         if let button = item.button {
             view.frame = button.bounds
@@ -41,28 +42,36 @@ final class MenuBarPill {
     }
 
     /// The pill's width when fully open: the wheel's circle, then the text.
-    func fullWidth(text: String, wheel: Bool) -> CGFloat {
-        guard !text.isEmpty else { return diameter }
+    private func fullWidth(_ text: String, wheel: Bool) -> CGFloat {
+        guard !text.isEmpty else { return view.diameter }
         let width = NSAttributedString(string: text, attributes: [.font: Self.font]).size().width
-        return ceil((wheel ? diameter : 10) + width + 10)
+        return ceil((wheel ? view.diameter : PillView.textInset) + width + PillView.textInset)
     }
 
-    func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone, fullWidth: CGFloat) {
+    func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone) {
         target = open ? 1 : 0
-        // Closing keeps the last text and width, so the text fades out rather than vanishing.
+        // Closing keeps the last text and width, so the text folds away rather than vanishing.
         guard open || openness == 0 else { return keepAnimating() }
-        view.text = text
         view.fraction = fraction ?? 0
         view.wheel = wheel
-        let width = max(fullWidth, diameter)
+        let width = fullWidth(text, wheel: wheel)
         if openness == 0 {
             // Closed: the opening itself will widen it.
+            view.text = text
             view.fullWidth = width
             resizeTo = width
-        } else if width != resizeTo {
-            resizeFrom = view.fullWidth
-            resizeTo = width
-            resizeStart = Date()
+            waitingText = nil
+        } else if width > resizeTo {
+            waitingText = text
+            resize(to: width)
+        } else if width < resizeTo {
+            view.text = text
+            waitingText = nil
+            resize(to: width)
+        } else if waitingText != nil {
+            waitingText = text
+        } else {
+            view.text = text
         }
         if tone != view.tone {
             view.previousTone = view.tone
@@ -72,20 +81,42 @@ final class MenuBarPill {
         keepAnimating()
     }
 
-    private func keepAnimating() {
-        view.needsDisplay = true
-        if timer == nil && (openness != target || view.isFading || isResizing) { startAnimating() }
-        if timer == nil { apply() }
+    private func resize(to width: CGFloat) {
+        resizeFrom = view.fullWidth
+        resizeTo = width
+        resizeStart = Date()
     }
 
+    private func keepAnimating() {
+        view.needsDisplay = true
+        if frames == nil && (openness != target || view.isFading || isResizing) { startAnimating() }
+        if frames == nil { apply() }
+    }
+
+    /// In step with the display where macOS allows it, so the pill moves without stutter. The main
+    /// display's clock, not the item's: an item pushed off-screen by a full menu bar gets no frames.
     private func startAnimating() {
         lastFrame = Date()
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.step() }
+        if #available(macOS 14, *), let screen = NSScreen.main ?? NSScreen.screens.first {
+            let link = screen.displayLink(target: self, selector: #selector(frame))
+            link.add(to: .main, forMode: .common)
+            frames = link
+        } else {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.step() }
+            }
+            // Common modes, so it keeps moving while the menu is open.
+            RunLoop.main.add(timer, forMode: .common)
+            frames = timer
         }
-        // Common modes, so it keeps moving while the menu is open.
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+    }
+
+    @objc private func frame() { step() }
+
+    private func stopAnimating() {
+        if #available(macOS 14, *), let link = frames as? CADisplayLink { link.invalidate() }
+        (frames as? Timer)?.invalidate()
+        frames = nil
     }
 
     private func step() {
@@ -95,11 +126,12 @@ final class MenuBarPill {
         openness = target > openness ? min(openness + move, target) : max(openness - move, target)
         let resized = min(now.timeIntervalSince(resizeStart) / Self.resize, 1)
         view.fullWidth = resizeFrom + (resizeTo - resizeFrom) * (1 - pow(1 - resized, 3))
-        apply()
-        if openness == target && !view.isFading && !isResizing {
-            timer?.invalidate()
-            timer = nil
+        if resized >= 1, let text = waitingText {
+            view.text = text
+            waitingText = nil
         }
+        apply()
+        if openness == target && !view.isFading && !isResizing && waitingText == nil { stopAnimating() }
     }
 
     private func apply() {
@@ -111,13 +143,17 @@ final class MenuBarPill {
             if item.length != NSStatusItem.variableLength { item.length = NSStatusItem.variableLength }
         } else {
             view.isHidden = false
-            item.button?.image = nil
-            item.length = view.pillWidth + Self.margin * 2
+            if item.button?.image != nil { item.button?.image = nil }
+            // Whole pixels only, so the menu bar isn't relaid out for every fraction of a point.
+            let length = view.pixel(view.pillWidth + Self.margin * 2)
+            if item.length != length { item.length = length }
         }
     }
 }
 
 final class PillView: NSView {
+    static let textInset: CGFloat = 10
+
     var text = ""
     var fraction = 0.0
     var wheel = true
@@ -132,11 +168,18 @@ final class PillView: NSView {
     var pillWidth: CGFloat { diameter + (fullWidth - diameter) * shape.widen }
     var isFading: Bool { Date().timeIntervalSince(toneChanged) < MenuBarPill.toneFade }
 
+    /// Rounded to the screen's pixels: an edge between two pixels blends into the menu bar as a grey rim.
+    func pixel(_ value: CGFloat) -> CGFloat {
+        let scale = window?.backingScaleFactor ?? 2
+        return (value * scale).rounded() / scale
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let mix = min(Date().timeIntervalSince(toneChanged) / MenuBarPill.toneFade, 1)
         let (fill, ink) = Self.blend(previousTone, tone, mix)
-        let pill = NSRect(x: (bounds.width - pillWidth) / 2, y: (bounds.height - diameter) / 2,
-                          width: pillWidth, height: diameter)
+        let width = pixel(pillWidth)
+        let pill = NSRect(x: pixel((bounds.width - width) / 2), y: pixel((bounds.height - diameter) / 2),
+                          width: width, height: diameter)
         let outline = NSBezierPath(roundedRect: pill, xRadius: diameter / 2, yRadius: diameter / 2)
         fill.withAlphaComponent(fill.alphaComponent * shape.alpha).setFill()
         outline.fill()
@@ -157,12 +200,21 @@ final class PillView: NSView {
             ink.withAlphaComponent(shape.alpha).setStroke()
             arc.stroke()
         }
-        if shape.text > 0 && !text.isEmpty {
-            let title = NSAttributedString(string: text, attributes: [
-                .font: MenuBarPill.font, .foregroundColor: ink.withAlphaComponent(shape.text),
-            ])
-            let size = title.size()
-            title.draw(at: NSPoint(x: pill.minX + (wheel ? diameter : 10), y: pill.midY - size.height / 2))
+
+        // Each part ("42%", "· 466.6 MB/s", "· 2m 10s") shows once it fits whole in the pill.
+        var x = pill.minX + (wheel ? diameter : Self.textInset)
+        let reach = pill.maxX - Self.textInset
+        for (index, part) in text.components(separatedBy: " · ").enumerated() where !text.isEmpty {
+            let piece = (index == 0 ? "" : " · ") + part
+            let plain = NSAttributedString(string: piece, attributes: [.font: MenuBarPill.font])
+            let size = plain.size()
+            let alpha = PillShape.partAlpha(end: x + size.width, reach: reach)
+            if alpha > 0 {
+                NSAttributedString(string: piece, attributes: [
+                    .font: MenuBarPill.font, .foregroundColor: ink.withAlphaComponent(alpha),
+                ]).draw(at: NSPoint(x: x, y: pill.midY - size.height / 2))
+            }
+            x += size.width
         }
         NSGraphicsContext.restoreGraphicsState()
     }
