@@ -397,4 +397,9 @@ check(watch.update(jobs: tracker.jobs, rules: .standard, now: time(200)).isEmpty
 tracker.ingest("I 2026-11-02 09:36:22.000+0000 <JBSTE> [1] state transition: something new")
 check(tracker.unrecognised, 1, "changed format is counted")
 
+// Only the app's own log is followed, not a helper's written alongside it.
+check(["com.pomfort.SilverstackXT9 2026-11-10--10-52-41-000.log", "com.pomfort.SilverstackLab8 2024-05-14--09-00-00-000.log",
+       "com.pomfort.SilverstackFileToolService 2026-11-10--10-52-41-897.log", "notes.txt"].map(LogFollower.isAppLog),
+      [true, true, false, false], "app logs only")
+
 if failures == 0 { print("All tests passed") } else { exit(1) }

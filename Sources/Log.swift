@@ -5,8 +5,8 @@ import Foundation
 final class LogFollower {
     let folder: URL
     private var path: String?
-    private var offset: UInt64 = 0
-    private var partial = Data()
+    /// How far each file has been read, so going back to one never reads it again from the start.
+    private var positions: [String: (offset: UInt64, partial: Data)] = [:]
     private var newest: URL?
     private var readsSinceListing = 0
     private static let readsPerListing = 10
@@ -20,8 +20,16 @@ final class LogFollower {
             (try? url.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
         }
         return names
-            .filter { $0.lastPathComponent.hasPrefix("com.pomfort.Silverstack") && $0.pathExtension == "log" }
+            .filter { Self.isAppLog($0.lastPathComponent) }
             .sorted { modified($0) < modified($1) }
+    }
+
+    /// The app's own log, "com.pomfort.SilverstackXT9 2026-…", not a helper's such as
+    /// "com.pomfort.SilverstackFileToolService 2026-…", written at the same time in the same folder.
+    static func isAppLog(_ name: String) -> Bool {
+        guard name.hasPrefix("com.pomfort.Silverstack"), name.hasSuffix(".log"),
+              let app = name.split(separator: " ").first else { return false }
+        return app.last?.isNumber == true
     }
 
     /// Starts two files back so a job that began before the last rotation is still found.
@@ -45,11 +53,9 @@ final class LogFollower {
     }
 
     private func read(_ url: URL) -> [String] {
-        if path != url.path {
-            path = url.path
-            offset = 0
-            partial = Data()
-        }
+        path = url.path
+        var (offset, partial) = positions[url.path] ?? (0, Data())
+        defer { positions[url.path] = (offset, partial) }
         guard let file = try? FileHandle(forReadingFrom: url) else { return [] }
         defer { try? file.close() }
         guard (try? file.seek(toOffset: offset)) != nil, let data = try? file.readToEnd(), !data.isEmpty else { return [] }

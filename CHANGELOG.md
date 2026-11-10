@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5 - 2026-11-10
+
+- Fixes progress, speed and time left freezing or jumping during copies and verifies with newer Silverstack XT 9 versions. Those also write a FileToolService log in the same folder, and while it was the newest file Backup Monitor read it instead of Silverstack's own log. Only Silverstack's own log is followed now, and switching between log files never reads one again from the start.
+
 ## 1.0.4 - 2026-11-10
 
 - Verify jobs are named after the disk they check, with the card in the details ("A6MT3_20TB", "Verify D004"). The verify of the card itself shows as "D004 (card)", and a Silverstack Lab job that checks every copy at once shows "Verify on 3 disks".

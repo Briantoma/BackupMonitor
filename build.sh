@@ -23,7 +23,7 @@ if [ "${1:-}" = "icon" ]; then
 fi
 
 mkdir -p build
-swiftc -O Sources/Core.swift tests/main.swift -o build/tests
+swiftc -O Sources/Core.swift Sources/Log.swift tests/main.swift -o build/tests
 ./build/tests
 
 APP="build/Backup Monitor.app"
