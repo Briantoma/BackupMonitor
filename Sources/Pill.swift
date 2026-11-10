@@ -3,7 +3,9 @@ import QuartzCore
 
 /// The menu bar readout while a job runs: a pill that fades in as a circle, widens to fit the
 /// numbers, follows them as they get longer or shorter, and folds back the same way, coloured by
-/// how the copy is going. Drawn by hand, so the text is never cut short with "…".
+/// how the copy is going. Drawn by hand as the button's own image, so the text is never cut short
+/// with "…", and so menu bar managers like Ice, which draw their own backgrounds behind items, never
+/// find an uncovered gap beside it while it changes size.
 @MainActor
 final class MenuBarPill: NSObject {
     static let duration: TimeInterval = 1
@@ -15,7 +17,7 @@ final class MenuBarPill: NSObject {
 
     private let item: NSStatusItem
     private let idleIcon: NSImage?
-    private let view = PillView()
+    private let view = PillPicture()
     private var openness: Double = 0
     private var target: Double = 0
     private var frames: AnyObject?
@@ -34,19 +36,14 @@ final class MenuBarPill: NSObject {
         self.idleIcon = idleIcon
         super.init()
         item.button?.image = idleIcon
-        if let button = item.button {
-            view.frame = button.bounds
-            view.autoresizingMask = [.width, .height]
-            button.addSubview(view)
-        }
-        view.isHidden = true
+        item.button?.imagePosition = .imageOnly
     }
 
     /// The pill's width when fully open: the wheel's circle, then the text.
     private func fullWidth(_ text: String, wheel: Bool) -> CGFloat {
         guard !text.isEmpty else { return view.diameter }
         let width = NSAttributedString(string: text, attributes: [.font: Self.font]).size().width
-        return ceil((wheel ? view.diameter : PillView.textInset) + width + PillView.textInset)
+        return ceil((wheel ? view.diameter : PillPicture.textInset) + width + PillPicture.textInset)
     }
 
     func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone) {
@@ -95,7 +92,6 @@ final class MenuBarPill: NSObject {
     }
 
     private func keepAnimating() {
-        view.needsDisplay = true
         if frames == nil && (openness != target || view.isFading || view.isTextFading || isResizing) { startAnimating() }
         if frames == nil { apply() }
     }
@@ -154,24 +150,31 @@ final class MenuBarPill: NSObject {
     }
 
     private func apply() {
+        guard let button = item.button else { return }
         view.shape = PillShape(openness: openness)
-        view.needsDisplay = true
+        view.scale = button.window?.backingScaleFactor ?? 2
         if openness == 0 {
-            view.isHidden = true
-            if item.button?.image == nil { item.button?.image = idleIcon }
+            if button.image !== idleIcon { button.image = idleIcon }
             if item.length != NSStatusItem.variableLength { item.length = NSStatusItem.variableLength }
-        } else {
-            view.isHidden = false
-            if item.button?.image != nil { item.button?.image = nil }
-            // Exactly the pill: any spare width shows macOS's grey item background beside it.
-            // Whole pixels only, so the menu bar isn't relaid out for every fraction of a point.
-            let length = view.pixel(view.pillWidth)
-            if item.length != length { item.length = length }
+            return
         }
+        // Whole pixels only, so the menu bar isn't relaid out for every fraction of a point.
+        let width = view.pixel(view.pillWidth)
+        let picture = view
+        let image = NSImage(size: NSSize(width: width, height: view.diameter), flipped: false) { rect in
+            // Drawn when shown, so the colours match the menu bar's own light or dark look.
+            MainActor.assumeIsolated { picture.draw(in: rect) }
+            return true
+        }
+        image.accessibilityDescription = view.text
+        button.image = image
+        if item.length != width { item.length = width }
     }
 }
 
-final class PillView: NSView {
+/// What the pill looks like at one moment, drawn into the button's image.
+@MainActor
+final class PillPicture {
     static let textInset: CGFloat = 10
 
     var text = ""
@@ -182,6 +185,7 @@ final class PillView: NSView {
     var tone = PillTone.neutral
     var previousTone = PillTone.neutral
     var toneChanged = Date.distantPast
+    var scale: CGFloat = 2
 
     /// The menu bar's height less a small margin, like macOS's own camera and recording pills.
     var diameter: CGFloat { min(NSStatusBar.system.thickness - 4, 22) }
@@ -196,16 +200,13 @@ final class PillView: NSView {
     }
 
     /// Rounded to the screen's pixels: an edge between two pixels blends into the menu bar as a grey rim.
-    func pixel(_ value: CGFloat) -> CGFloat {
-        let scale = window?.backingScaleFactor ?? 2
-        return (value * scale).rounded() / scale
-    }
+    func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
 
-    override func draw(_ dirtyRect: NSRect) {
+    func draw(in bounds: NSRect) {
         let mix = min(Date().timeIntervalSince(toneChanged) / MenuBarPill.toneFade, 1)
         let (fill, ink) = Self.blend(previousTone, tone, mix)
         // The item's actual width, which can trail the animation by a frame, so the pill always covers it.
-        let pill = NSRect(x: 0, y: pixel((bounds.height - diameter) / 2), width: max(bounds.width, diameter), height: diameter)
+        let pill = NSRect(x: 0, y: 0, width: max(bounds.width, diameter), height: diameter)
         let outline = NSBezierPath(roundedRect: pill, xRadius: diameter / 2, yRadius: diameter / 2)
         fill.withAlphaComponent(fill.alphaComponent * shape.alpha).setFill()
         outline.fill()
