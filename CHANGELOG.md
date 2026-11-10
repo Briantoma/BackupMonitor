@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4 - 2026-11-10
+
+- Verify jobs are named after the disk they check, with the card in the details ("A6MT3_20TB", "Verify D004"). The verify of the card itself shows as "D004 (card)", and a Silverstack Lab job that checks every copy at once shows "Verify on 3 disks".
+- Speed and time left are measured by Backup Monitor: the real throughput over the last 20 s, using the last 3 s until 20 s have passed, and nothing for the first 3 s. They change every 5 s, or 1, 2 or 10 s, set in Settings. "—" means nothing moved in the last 20 s. Time left no longer counts the wait before a job starts, which made a 5-minute verify read over an hour.
+- Settings chooses what each side of the closed island shows: up to two of the ring, percentage, time left, speed and number of jobs, with a live preview. Without a notch both sides sit next to each other.
+- The open island and the menu list up to 8 jobs: the first 3 in full, the others on one line each with a thin progress bar, then "+N more".
+- Silverstack Lab: source cards and ingest ticks are read from Lab's own file table.
+
 ## 1.0.3 - 2026-11-10
 
 - The island appears with the same timing as the menu bar pill: it fades in, grows out of the notch, then its ring and text fade in; when it goes, the contents fade out and it shrinks back into the notch. Opened by hovering the notch between jobs, it still shows and hides at once.

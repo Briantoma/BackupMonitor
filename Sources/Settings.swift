@@ -12,6 +12,11 @@ final class Preferences: ObservableObject {
     @Published var notifySlow: Bool { didSet { defaults.set(notifySlow, forKey: "notifySlow") } }
     @Published var notifyJobs: Bool { didSet { defaults.set(notifyJobs, forKey: "notifyJobs") } }
     @Published var notifyLogs: Bool { didSet { defaults.set(notifyLogs, forKey: "notifyLogs") } }
+    /// How often speed and time left change on screen, in seconds.
+    @Published var refreshInterval: Double { didSet { defaults.set(refreshInterval, forKey: "refreshInterval") } }
+    /// Two items per side of the closed island: on the left from the outer edge in, on the right from the notch out.
+    @Published var notchLeft: [NotchItem] { didSet { defaults.set(notchLeft.map(\.rawValue).joined(separator: ","), forKey: "notchLeft") } }
+    @Published var notchRight: [NotchItem] { didSet { defaults.set(notchRight.map(\.rawValue).joined(separator: ","), forKey: "notchRight") } }
     @Published var rules: CardRules {
         didSet {
             defaults.set(Dictionary(uniqueKeysWithValues: rules.entries.map { ($0.key.rawValue, $0.value) }), forKey: "cardEntries")
@@ -31,6 +36,9 @@ final class Preferences: ObservableObject {
         notifySlow = flag("notifySlow", true)
         notifyJobs = flag("notifyJobs", false)
         notifyLogs = flag("notifyLogs", false)
+        refreshInterval = defaults.object(forKey: "refreshInterval") as? Double ?? 5
+        notchLeft = NotchItem.list(defaults.string(forKey: "notchLeft"), [.ring, .none])
+        notchRight = NotchItem.list(defaults.string(forKey: "notchRight"), [.percent, .none])
         var rules = CardRules.standard
         for (key, value) in defaults.dictionary(forKey: "cardEntries") as? [String: [String]] ?? [:] {
             if let group = CardGroup(rawValue: key) { rules.entries[group] = value }
@@ -148,7 +156,21 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(!prefs.showMenuBar)
+                Picker("Update speed and time left every", selection: $prefs.refreshInterval) {
+                    ForEach([1.0, 2, 5, 10], id: \.self) { Text("\(Int($0)) s").tag($0) }
+                }
             }
+            Section {
+                NotchPreview(left: prefs.notchLeft, right: prefs.notchRight, hasNotch: hasNotch)
+                side(hasNotch ? "Left of the notch" : "Left", \.notchLeft)
+                side(hasNotch ? "Right of the notch" : "Right", \.notchRight)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("Island")
+                    InfoButton("Up to two items per side, for the first running job. On the left they read from the outer edge in, on the right from the notch out. Without a notch both sides sit next to each other.")
+                }
+            }
+            .disabled(!prefs.showIsland)
             Section {
                 ForEach(CardGroup.allCases, id: \.self) { group in
                     VStack(alignment: .leading, spacing: 6) {
@@ -240,6 +262,22 @@ struct SettingsView: View {
         }
     }
 
+    private var hasNotch: Bool { NSScreen.screens.contains { $0.safeAreaInsets.top > 0 } }
+
+    private func side(_ title: String, _ items: ReferenceWritableKeyPath<Preferences, [NotchItem]>) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            ForEach(0..<2, id: \.self) { index in
+                Picker("", selection: Binding(get: { prefs[keyPath: items][index] },
+                                              set: { prefs[keyPath: items][index] = $0 })) {
+                    ForEach(NotchItem.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+        }
+    }
+
     private func option(_ title: String, _ option: MenuBarOptions, help: String) -> some View {
         Toggle(title, isOn: Binding(get: { prefs.menuBarOptions.contains(option) },
                                     set: { on in
@@ -252,5 +290,41 @@ struct SettingsView: View {
         Binding(get: { prefs.rules.minimum[group] ?? 0 },
                 // Steps of 10 on the slider; drawn without step ticks, which crowd a 10...2000 range.
                 set: { prefs.rules.minimum[group] = min(max(($0 / 10).rounded() * 10, 10), 2000) })
+    }
+}
+
+/// The closed island as set, with sample figures, shrunk to fit when both sides are full.
+struct NotchPreview: View {
+    let left: [NotchItem]
+    let right: [NotchItem]
+    let hasNotch: Bool
+    private static let texts: [NotchItem: String] = [.percent: "42%", .remaining: "1m 05s", .speed: "466.6 MB/s", .jobCount: "2 jobs"]
+
+    var body: some View {
+        let metrics = IslandMetrics(notchWidth: 90, height: 32, hasNotch: hasNotch, left: left, right: right)
+        let scale = min(1, 380 / max(metrics.collapsedWidth, 1))
+        HStack(spacing: 0) {
+            NotchSide(items: left, texts: Self.texts, color: .white, leading: true) { ring }
+                .frame(width: metrics.leftWidth, alignment: .leading)
+            // The notch itself, outlined so it shows against the black island.
+            RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [3]))
+                .frame(width: metrics.gap, height: 24).opacity(hasNotch ? 1 : 0)
+            NotchSide(items: right, texts: Self.texts, color: .white, leading: false) { ring }
+                .frame(width: metrics.rightWidth, alignment: .trailing)
+        }
+        .frame(height: metrics.height)
+        .background(Color.black)
+        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
+        .scaleEffect(scale)
+        .frame(maxWidth: .infinity)
+        .frame(height: 40)
+    }
+
+    private var ring: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.18), lineWidth: 3)
+            Circle().trim(from: 0, to: 0.42).stroke(.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
     }
 }

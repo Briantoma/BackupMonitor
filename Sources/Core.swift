@@ -17,6 +17,8 @@ struct JobInfo: Equatable {
     var alreadyDoneTasks: Int
     /// The volume each file is copied from, under both spellings like sizes.
     var sources: [String: String] = [:]
+    /// The volumes a verify job reads back: the card, the destination disks, or both.
+    var verified: [String] = []
     private var counts: [String: Int] = [:]
 
     init(title: String = "", sizes: [String: Double] = [:], totalBytes: Double = 0, totalTasks: Int = 0,
@@ -87,7 +89,26 @@ struct Job: Identifiable {
         return (String(parts[0]), row)
     }
 
-    var title: String { info?.title ?? workflow ?? kindLabel }
+    /// Silverstack 9 runs one verify job per destination disk, all named after the card, so the
+    /// disk tells them apart. The volume named like the job is the card itself.
+    var title: String {
+        if kind == "Verify", let info, !info.verified.isEmpty {
+            let disks = verifiedDisks
+            if disks.count == 1 { return disks[0] }
+            if disks.isEmpty { return "\(info.title) (card)" }
+        }
+        return info?.title ?? workflow ?? kindLabel
+    }
+
+    private var verifiedDisks: [String] { info.map { info in info.verified.filter { $0 != info.title } } ?? [] }
+
+    /// "Verify D004" under a disk's name, "Verify on 3 disks" when one job checks them all (Lab 8).
+    var verifyLabel: String? {
+        guard kind == "Verify", let info, !info.verified.isEmpty else { return nil }
+        let disks = verifiedDisks
+        if disks.count > 1 { return "Verify on \(disks.count) disks" }
+        return disks.isEmpty ? nil : "Verify \(info.title)"
+    }
 
     var kindLabel: String {
         switch kind {
@@ -130,13 +151,84 @@ struct Job: Identifiable {
         let inFlight = active.values.reduce(0, +)
         return min((Double(doneTasks) + inFlight) / Double(info.totalTasks), 1)
     }
+}
 
-    /// Needs a little history so the first small sidecar files don't produce a wild estimate.
-    func remaining(at now: Date) -> TimeInterval? {
-        guard state == .running, let fraction, fraction >= 0.02, fraction < 1 else { return nil }
-        let elapsed = now.timeIntervalSince(startedAt)
-        guard elapsed >= 10 else { return nil }
-        return elapsed * (1 - fraction) / fraction
+/// What each side of the closed island can show.
+enum NotchItem: String, CaseIterable {
+    case none, ring, percent, remaining, speed, jobCount
+
+    var label: String {
+        switch self {
+        case .none: return "Nothing"
+        case .ring: return "Ring"
+        case .percent: return "Percentage"
+        case .remaining: return "Time left"
+        case .speed: return "Speed"
+        case .jobCount: return "Jobs"
+        }
+    }
+
+    /// The widest text each item shows, so its room stays the same through a job. The
+    /// percentage also shows "Done", "Queued" or "Stopped".
+    var room: String? {
+        switch self {
+        case .none, .ring: return nil
+        case .percent: return "Stopped"
+        case .remaining: return "00m 00s"
+        case .speed: return "000.0 MB/s"
+        case .jobCount: return "0 jobs"
+        }
+    }
+
+    /// Stored as "ring,none".
+    static func list(_ text: String?, _ standard: [NotchItem]) -> [NotchItem] {
+        guard let text else { return standard }
+        let items = text.split(separator: ",").compactMap { NotchItem(rawValue: String($0)) }
+        return items.count == 2 ? items : standard
+    }
+}
+
+/// Speed and time left as shown, both from the same stretch of work so they always agree.
+struct Readout: Equatable {
+    static let stalled = "—"
+    /// nil for jobs without byte sizes (renders), which keep Silverstack's own FPS.
+    var speed: String?
+    var remaining: String?
+}
+
+/// A job's progress over its last 20 s of work. Until 20 s have passed it averages the last 3 s,
+/// and shows nothing before that. Timed from the job's first file, not its start: Silverstack starts a verify
+/// job at the same moment as its copy, so the start counted the whole copy as verify time.
+struct Pace {
+    static let window: TimeInterval = 20
+    static let first: TimeInterval = 3
+    private var samples: [(date: Date, bytes: Double, fraction: Double)] = []
+
+    mutating func add(_ date: Date, bytes: Double, fraction: Double) {
+        samples.append((date, bytes, fraction))
+        // Keeps one sample from before the window, as its starting point.
+        while samples.count > 2, samples[1].date <= date.addingTimeInterval(-Self.window) { samples.removeFirst() }
+    }
+
+    func readout(at now: Date, showsBytes: Bool) -> Readout? {
+        guard let first = samples.first, let last = samples.last,
+              now.timeIntervalSince(first.date) >= Self.first else { return nil }
+        let window = now.timeIntervalSince(first.date) >= Self.window ? Self.window : Self.first
+        let from = samples.last { $0.date <= now.addingTimeInterval(-window) } ?? first
+        let seconds = now.timeIntervalSince(from.date), progress = last.fraction - from.fraction
+        guard progress > 0, seconds > 0 else {
+            return Readout(speed: showsBytes ? Readout.stalled : nil, remaining: Readout.stalled)
+        }
+        return Readout(speed: showsBytes ? Format.speed((last.bytes - from.bytes) / seconds) : nil,
+                       remaining: Format.duration((1 - last.fraction) * seconds / progress))
+    }
+}
+
+extension Job {
+    /// The measured speed, or Silverstack's FPS for a render, which has no byte sizes.
+    func shownSpeed(_ readout: Readout?) -> String? {
+        guard state == .running else { return nil }
+        return showsBytes ? readout?.speed : speed
     }
 }
 
@@ -474,6 +566,12 @@ enum Format {
     /// Rounds down, so nothing shows 100% until Silverstack reports the job finished.
     static func percent(_ fraction: Double) -> Int { min(Int(fraction * 100), 99) }
 
+    /// In Silverstack's own style: "466.6 MB/s", "3.21 GB/s".
+    static func speed(_ bytesPerSecond: Double) -> String {
+        bytesPerSecond >= 1e9 ? String(format: "%.2f GB/s", bytesPerSecond / 1e9)
+            : String(format: "%.1f MB/s", bytesPerSecond / 1e6)
+    }
+
     static func duration(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         if total < 60 { return "\(total)s" }
@@ -496,12 +594,12 @@ enum MenuBarStatus {
     /// The job the menu bar follows: the first one actually copying or rendering.
     static func active(_ jobs: [Job]) -> Job? { jobs.first { !$0.state.isFinished && !$0.isWaiting } }
 
-    static func text(for jobs: [Job], options: MenuBarOptions, now: Date) -> String {
+    static func text(for jobs: [Job], options: MenuBarOptions, readouts: [String: Readout]) -> String {
         guard let job = active(jobs) else { return "" }
         var parts: [String] = []
         if options.contains(.percent), let fraction = job.fraction { parts.append("\(Format.percent(fraction))%") }
-        if options.contains(.speed), job.state == .running, let speed = job.speed { parts.append(speed) }
-        if options.contains(.remaining), let remaining = job.remaining(at: now) { parts.append(Format.duration(remaining)) }
+        if options.contains(.speed), let speed = job.shownSpeed(readouts[job.id]) { parts.append(speed) }
+        if options.contains(.remaining), job.state == .running, let remaining = readouts[job.id]?.remaining { parts.append(remaining) }
         if options.contains(.jobCount) {
             let count = jobs.filter { !$0.state.isFinished }.count
             parts.append("\(count) job\(count == 1 ? "" : "s")")

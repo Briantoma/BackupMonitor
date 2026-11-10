@@ -89,6 +89,10 @@ final class Store: ObservableObject {
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var now = Date()
     @Published var slow: [SlowCard] = []
+    /// Speed and time left per job, changed only every few seconds (Settings) so they can be read.
+    @Published private(set) var readouts: [String: Readout] = [:]
+    private var paces: [String: Pace] = [:]
+    private var lastReadout = Date.distantPast
     /// How far the island has grown out of the notch, and how visible its contents are.
     @Published var islandGrowth: CGFloat = 1
     @Published var islandContent: Double = 1
@@ -119,6 +123,14 @@ final class Store: ObservableObject {
     }
     var running: [Job] { shown.filter { !$0.isWaiting } }
     var queued: [Job] { shown.filter(\.isWaiting) }
+    static let fullRows = 3, listedJobs = 8
+    /// The open island's job list: full rows first, then one-line rows, then a count of the rest.
+    var listed: (full: [Job], compact: [Job], more: Int) {
+        let full = Array(running.prefix(Self.fullRows))
+        let rest = Array(running.dropFirst(Self.fullRows)) + queued
+        let compact = Array(rest.prefix(Self.listedJobs - full.count))
+        return (full, compact, rest.count - compact.count)
+    }
     var primary: Job? { running.first { !$0.state.isFinished } ?? queued.first ?? shown.last }
 
     func start() {
@@ -189,6 +201,7 @@ final class Store: ObservableObject {
     private func tick() {
         // Nothing on screen needs the clock, so leave the view alone between jobs.
         if !shown.isEmpty || isHovering { now = Date() }
+        measure()
         let running = silverstackIsRunning
         if sources.isEmpty && running { findSources() }
         for source in sources {
@@ -223,6 +236,23 @@ final class Store: ObservableObject {
             refreshVolumes()
             // The log can get ahead of the database saving the job as finished.
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in self?.refreshVolumes() }
+        }
+    }
+
+    /// Samples every working job, then refreshes what's shown when it's due, or at once when a
+    /// job gets its first figures or loses them.
+    private func measure() {
+        let date = Date()
+        let working = shown.filter { $0.state == .running && !$0.isWaiting && $0.info != nil }
+        // A pause or a finish starts the measure afresh.
+        paces = paces.filter { id, _ in working.contains { $0.id == id } }
+        for job in working { paces[job.id, default: Pace()].add(date, bytes: job.doneBytes, fraction: job.fraction ?? 0) }
+        var fresh: [String: Readout] = [:]
+        for job in working { fresh[job.id] = paces[job.id]?.readout(at: date, showsBytes: job.showsBytes) }
+        let due = date.timeIntervalSince(lastReadout) >= Preferences.shared.refreshInterval - 0.25
+        if due || Set(fresh.keys) != Set(readouts.keys) {
+            lastReadout = date
+            if fresh != readouts { readouts = fresh }
         }
     }
 
@@ -292,10 +322,11 @@ final class Store: ObservableObject {
         func job(_ fraction: Double) -> Job {
             var job = Job(id: "demo", url: "", kind: "Copy", workflow: "Demo Workflow",
                           startedAt: started.addingTimeInterval(-60), lastActivity: Date())
-            job.info = JobInfo(title: "DEMO_REEL_A001", sizes: ["A001C007.MOV": 80e9], totalBytes: 80e9, totalTasks: 24)
+            // Sized so the measured speed comes out at the logged 466.6 MB/s: 5% a second.
+            job.info = JobInfo(title: "DEMO_REEL_A001", sizes: ["A001C007.MOV": 9.332e9], totalBytes: 9.332e9, totalTasks: 24)
             job.active = ["A001C007.MOV": fraction]
             job.phase = fraction < 0.6 ? "copy" : "verify"
-            job.speed = fraction < 0.6 ? "466.6 MB/s" : "3.21 GB/s"
+            job.speed = "466.6 MB/s"
             job.currentFile = "A001C007.MOV"
             if fraction >= 1 {
                 job.state = .succeeded
@@ -303,14 +334,20 @@ final class Store: ObservableObject {
             }
             return job
         }
-        var queued = Job(id: "demo-queued", url: "", kind: "Render", startedAt: started.addingTimeInterval(-60), lastActivity: Date())
-        queued.info = JobInfo(title: "DEMO_REEL_A001", totalTasks: 24)
+        func waiting(_ id: String, _ kind: String, _ disk: String?) -> Job {
+            var job = Job(id: id, url: "", kind: kind, startedAt: started.addingTimeInterval(-60), lastActivity: Date())
+            job.info = JobInfo(title: "DEMO_REEL_A001", sizes: ["A001C007.MOV": 9.332e9], totalBytes: 9.332e9, totalTasks: 24)
+            job.info?.verified = disk.map { [$0] } ?? []
+            return job
+        }
+        let queued = [waiting("demo-verify-1", "Verify", "BACKUP_1"), waiting("demo-verify-2", "Verify", "BACKUP_2"),
+                      waiting("demo-queued", "Render", nil)]
         var fraction = 0.0
-        demoJobs = [job(0), queued]
+        demoJobs = [job(0)] + queued
         let demo = Timer(timeInterval: 0.1, repeats: true) { [weak self] timer in
             guard let self else { return timer.invalidate() }
-            fraction = min(fraction + 0.01, 1)
-            self.demoJobs = fraction < 1 ? [job(fraction), queued] : [job(fraction)]
+            fraction = min(fraction + 0.005, 1)
+            self.demoJobs = fraction < 1 ? [job(fraction)] + queued : [job(fraction)]
             if fraction >= 1 {
                 timer.invalidate()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.demoJobs = nil }
@@ -341,18 +378,70 @@ struct IslandMetrics {
     var notchWidth: CGFloat
     var height: CGFloat
     var hasNotch = true
-    var earWidth: CGFloat = 64
+    var left: [NotchItem] = [.ring, .none]
+    var right: [NotchItem] = [.percent, .none]
     var expandedWidth: CGFloat = 460
-    var collapsedWidth: CGFloat { notchWidth + earWidth * 2 }
+    /// Either side of the notch is as wide as the wider one, so the notch stays centred. Without a
+    /// notch the two sides sit next to each other.
+    var leftWidth: CGFloat { hasNotch ? max(Self.width(of: left), Self.width(of: right)) : Self.width(of: left) }
+    var rightWidth: CGFloat { hasNotch ? leftWidth : Self.width(of: right) }
+    var gap: CGFloat { hasNotch ? notchWidth : 0 }
+    var collapsedWidth: CGFloat { leftWidth + gap + rightWidth }
     /// Where the island grows from: the notch itself, or nothing on a screen without one.
     var startWidth: CGFloat { hasNotch ? notchWidth : 0 }
 
-    static func expandedHeight(running: Int, queued: Int, recent: Int, volumes: Int?, hovering: Bool, warning: Bool,
-                               top: CGFloat) -> CGFloat {
+    static let itemFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    static let itemSpacing: CGFloat = 6
+
+    /// The room an item keeps, measured on its widest text.
+    static func width(of item: NotchItem) -> CGFloat {
+        if item == .ring { return 20 }
+        guard let room = item.room else { return 0 }
+        return ceil((room as NSString).size(withAttributes: [.font: itemFont]).width) + 2
+    }
+
+    /// 12 points from the outer edge and 8 from the notch.
+    static func width(of items: [NotchItem]) -> CGFloat {
+        let shown = items.filter { $0 != .none }
+        guard !shown.isEmpty else { return 0 }
+        return 20 + shown.map(width(of:)).reduce(0, +) + itemSpacing * CGFloat(shown.count - 1)
+    }
+
+    static func expandedHeight(full: Int, compact: Int, more: Bool, recent: Int, volumes: Int?, hovering: Bool,
+                               warning: Bool, top: CGFloat) -> CGFloat {
         func list(_ rows: Int) -> CGFloat { rows > 0 ? 26 + CGFloat(rows) * 26 : 0 }
         let controls: CGFloat = hovering ? 34 + (warning ? 34 : 0) : 0
         let volumeHeight = volumes.map { 26 + CGFloat($0) * 26 } ?? 0
-        return top + 8 + CGFloat(min(running, 3)) * 92 + list(queued) + list(recent) + volumeHeight + controls + 12
+        let compactHeight: CGFloat = compact > 0 || more ? 8 + CGFloat(compact) * 26 + (more ? 22 : 0) : 0
+        return top + 8 + CGFloat(full) * 92 + compactHeight + list(recent) + volumeHeight + controls + 12
+    }
+}
+
+/// One side of the closed island: its items in order, each in a fixed room. Shared with the
+/// preview in Settings.
+struct NotchSide<Ring: View>: View {
+    let items: [NotchItem]
+    let texts: [NotchItem: String]
+    let color: Color
+    let leading: Bool
+    @ViewBuilder let ring: () -> Ring
+
+    var body: some View {
+        HStack(spacing: IslandMetrics.itemSpacing) {
+            ForEach(Array(items.filter { $0 != .none }.enumerated()), id: \.offset) { _, item in
+                if item == .ring {
+                    ring().frame(width: 20, height: 20)
+                } else {
+                    Text(texts[item] ?? "")
+                        .font(Font(IslandMetrics.itemFont))
+                        .foregroundColor(color)
+                        .lineLimit(1)
+                        .frame(width: IslandMetrics.width(of: item), alignment: .trailing)
+                }
+            }
+        }
+        .padding(.leading, leading ? 12 : 8)
+        .padding(.trailing, leading ? 8 : 12)
     }
 }
 
@@ -383,8 +472,7 @@ struct IslandView: View {
 
     private var menuContent: some View {
         VStack(spacing: 8) {
-            ForEach(store.running.prefix(3)) { row($0).frame(height: 84) }
-            if !store.queued.isEmpty { queuedList }
+            jobList
             if !store.recent.isEmpty { recentList }
         }
         .foregroundColor(palette.text)
@@ -429,19 +517,27 @@ struct IslandView: View {
 
     @ViewBuilder private var collapsedContent: some View {
         if let job = store.primary ?? store.lastPrimary {
+            let texts = notchTexts(job), color = job.state == .running ? Color.white : tint(job)
             HStack(spacing: 0) {
-                ring(job, size: 20)
-                    .padding(.leading, 12)
-                    .frame(width: metrics.earWidth, alignment: .leading)
-                Spacer(minLength: metrics.notchWidth)
-                Text(shortStatus(job))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundColor(job.state == .running ? .white : tint(job))
-                    .padding(.trailing, 12)
-                    .frame(width: metrics.earWidth, alignment: .trailing)
+                NotchSide(items: metrics.left, texts: texts, color: color, leading: true) { ring(job, size: 20) }
+                    .frame(width: metrics.leftWidth, alignment: .leading)
+                Color.clear.frame(width: metrics.gap)
+                NotchSide(items: metrics.right, texts: texts, color: color, leading: false) { ring(job, size: 20) }
+                    .frame(width: metrics.rightWidth, alignment: .trailing)
             }
             .frame(height: metrics.height)
         }
+    }
+
+    private func notchTexts(_ job: Job) -> [NotchItem: String] {
+        let readout = store.readouts[job.id]
+        let count = store.shown.filter { !$0.state.isFinished }.count
+        var texts: [NotchItem: String] = [.percent: shortStatus(job), .jobCount: "\(count) job\(count == 1 ? "" : "s")"]
+        if job.state == .running {
+            texts[.speed] = job.shownSpeed(readout)
+            texts[.remaining] = readout?.remaining
+        }
+        return texts
     }
 
     private func shortStatus(_ job: Job) -> String {
@@ -472,10 +568,48 @@ struct IslandView: View {
         .frame(width: size, height: size)
     }
 
+    @ViewBuilder private var jobList: some View {
+        let listed = store.listed
+        ForEach(listed.full) { row($0).frame(height: 84) }
+        if !listed.compact.isEmpty || listed.more > 0 {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(listed.compact) { compactRow($0).frame(height: 26) }
+                if listed.more > 0 {
+                    Text("+\(listed.more) more").font(.system(size: 11.5)).foregroundColor(palette.faint)
+                        .frame(height: 22, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    /// Name, a thin bar, then the percentage and time left, or how long it has waited.
+    private func compactRow(_ job: Job) -> some View {
+        HStack(spacing: 8) {
+            Text(job.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            Capsule().fill(palette.track)
+                .overlay(alignment: .leading) {
+                    GeometryReader { bar in
+                        Capsule().fill(tint(job)).frame(width: bar.size.width * CGFloat(job.isWaiting ? 0 : job.fraction ?? 0))
+                    }
+                }
+                .frame(width: 90, height: 4)
+            Text(compactDetail(job)).font(.system(size: 11.5).monospacedDigit())
+                .foregroundColor(job.isWaiting ? palette.dim : palette.detail)
+                .lineLimit(1).frame(width: 96, alignment: .trailing)
+        }
+    }
+
+    private func compactDetail(_ job: Job) -> String {
+        if job.isWaiting { return "waiting \(Format.duration(store.now.timeIntervalSince(job.startedAt)))" }
+        guard job.state == .running, let fraction = job.fraction else { return shortStatus(job) }
+        let remaining = store.readouts[job.id]?.remaining
+        return ["\(Format.percent(fraction))%", remaining].compactMap { $0 }.joined(separator: " · ")
+    }
+
     private var expandedContent: some View {
         VStack(spacing: 8) {
-            ForEach(store.running.prefix(3)) { row($0).frame(height: 84) }
-            if !store.queued.isEmpty { queuedList }
+            jobList
             if store.isHovering {
                 if let problem = store.logProblem {
                     Label(problem, systemImage: "exclamationmark.triangle.fill")
@@ -551,38 +685,6 @@ struct IslandView: View {
         .font(.system(size: 12, weight: .medium))
         .foregroundColor(.white.opacity(0.75))
         .frame(height: 26)
-    }
-
-    private var queuedList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Queued")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(palette.faint)
-                .frame(height: 18, alignment: .top)
-            ForEach(store.queued) { queuedRow($0).frame(height: 26) }
-        }
-    }
-
-    private func queuedRow(_ job: Job) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "clock")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(palette.dim)
-                .frame(width: 16)
-            Text(job.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 8)
-            Text(queuedDetail(job)).font(.system(size: 11.5).monospacedDigit())
-                .foregroundColor(palette.dim).lineLimit(1).fixedSize()
-        }
-    }
-
-    private func queuedDetail(_ job: Job) -> String {
-        var parts = [job.kindLabel]
-        if let info = job.info {
-            parts.append(job.showsBytes ? Format.bytes(info.totalBytes) : "\(info.totalTasks) files")
-        }
-        parts.append("waiting \(Format.duration(store.now.timeIntervalSince(job.startedAt)))")
-        return parts.joined(separator: " · ")
     }
 
     private var recentList: some View {
@@ -666,7 +768,7 @@ struct IslandView: View {
     }
 
     private func detailLine(_ job: Job) -> String {
-        var parts = [job.phase.map { $0.capitalized } ?? job.kindLabel]
+        var parts = [job.verifyLabel ?? job.phase.map { $0.capitalized } ?? job.kindLabel]
         if job.state == .finishing { parts = ["Finishing"] }
         if let info = job.info {
             if job.showsBytes && !job.state.isFinished {
@@ -674,8 +776,8 @@ struct IslandView: View {
             }
             parts.append("\(job.doneTasks)/\(info.totalTasks) files")
         }
-        if job.state == .running, let speed = job.speed { parts.append(speed) }
-        if let remaining = job.remaining(at: store.now) { parts.append("\(Format.duration(remaining)) left") }
+        if let speed = job.shownSpeed(store.readouts[job.id]) { parts.append(speed) }
+        if job.state == .running, let remaining = store.readouts[job.id]?.remaining { parts.append("\(remaining) left") }
         return parts.joined(separator: " · ")
     }
 
@@ -740,6 +842,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.statusItem.isVisible = self.prefs.showMenuBar
+                if self.metrics.left != self.prefs.notchLeft || self.metrics.right != self.prefs.notchRight { self.screensChanged() }
                 self.layoutPanel()
                 self.updateStatusItem()
             }
@@ -777,12 +880,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     private static func measure(_ screen: NSScreen) -> IslandMetrics {
+        let prefs = Preferences.shared
         guard screen.safeAreaInsets.top > 0,
               let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
-            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6, hasNotch: false)
+            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6, hasNotch: false,
+                                 left: prefs.notchLeft, right: prefs.notchRight)
         }
         return IslandMetrics(notchWidth: screen.frame.width - left.width - right.width,
-                             height: screen.safeAreaInsets.top)
+                             height: screen.safeAreaInsets.top, left: prefs.notchLeft, right: prefs.notchRight)
     }
 
     @objc private func screensChanged() {
@@ -826,10 +931,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let recent = store.isHovering ? store.recent.count : 0
         guard prefs.showIsland, !jobs.isEmpty || store.isHovering else { return fadeIsland(in: false) }
         let expanded = store.isHovering || jobs.contains { $0.state == .failed }
+        let listed = store.listed
         let size = expanded
             ? NSSize(width: metrics.expandedWidth,
-                     height: IslandMetrics.expandedHeight(running: store.running.count, queued: store.queued.count,
-                                                          recent: recent,
+                     height: IslandMetrics.expandedHeight(full: listed.full.count, compact: listed.compact.count,
+                                                          more: listed.more > 0, recent: recent,
                                                           volumes: store.isHovering && !store.volumes.isEmpty ? store.listedVolumes.count : nil,
                                                           hovering: store.isHovering, warning: store.logProblem != nil,
                                                           top: metrics.height))
@@ -1063,7 +1169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         followedJob = active?.id
         let green = (greenUntil ?? .distantPast) > now && active == nil
         let hasText = !options.subtracting(.wheel).isEmpty
-        let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, now: now)
+        let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, readouts: store.readouts)
         let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
         let busy = active != nil || failed || green
         // With no readouts chosen, or none that fit, the drive icon itself takes the colour.

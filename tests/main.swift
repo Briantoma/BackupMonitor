@@ -275,13 +275,42 @@ working.info = JobInfo(title: "R", totalBytes: 100, totalTasks: 2, alreadyDoneBy
 working.currentFile = "a.MP4"
 let waiting = Job(id: "q", url: "", kind: "Render", startedAt: Date(), lastActivity: Date())
 let at = Date(timeIntervalSince1970: 100)
-check(MenuBarStatus.text(for: [waiting], options: [.percent, .jobCount], now: at), "", "nothing while only queued")
-check(MenuBarStatus.text(for: [waiting, working], options: [.percent], now: at), "25%", "percent of the working job")
-check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining, .jobCount], now: at),
+let shown = ["w": Readout(speed: "466.6 MB/s", remaining: "5m 0s")]
+check(MenuBarStatus.text(for: [waiting], options: [.percent, .jobCount], readouts: shown), "", "nothing while only queued")
+check(MenuBarStatus.text(for: [waiting, working], options: [.percent], readouts: shown), "25%", "percent of the working job")
+check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining, .jobCount], readouts: shown),
       "25% · 5m 0s · 2 jobs", "every readout")
-check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job", "singular")
-working.speed = "466.6 MB/s"
-check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), "25% · 466.6 MB/s", "speed after percent")
+check(MenuBarStatus.text(for: [working], options: [.jobCount], readouts: shown), "1 job", "singular")
+check(MenuBarStatus.text(for: [working], options: [.percent, .speed], readouts: shown), "25% · 466.6 MB/s", "speed after percent")
+check(MenuBarStatus.text(for: [working], options: [.percent, .speed, .remaining], readouts: [:]), "25%", "no speed or time before 3 s")
+
+// Speed and time left: nothing for 3 s, then the last 3 s, then the last 20 s.
+func second(_ value: Double) -> Date { Date(timeIntervalSince1970: value) }
+var pace = Pace()
+for t in stride(from: 0.0, through: 2.5, by: 0.5) { pace.add(second(t), bytes: t * 100e6, fraction: t / 100) }
+check(pace.readout(at: second(2.5), showsBytes: true), nil, "blank for the first 3 s")
+for t in stride(from: 3.0, through: 10, by: 0.5) { pace.add(second(t), bytes: (t < 7 ? t * 100e6 : 700e6 + (t - 7) * 400e6), fraction: t / 100) }
+check(pace.readout(at: second(10), showsBytes: true)?.speed, "400.0 MB/s", "last 3 s until 20 s have passed")
+check(pace.readout(at: second(10), showsBytes: true)?.remaining, "1m 30s", "time left from the same 3 s")
+for t in stride(from: 10.5, through: 30, by: 0.5) { pace.add(second(t), bytes: 700e6 + (t - 7) * 400e6, fraction: 0.1 + (t - 10) / 200) }
+check(pace.readout(at: second(30), showsBytes: true)?.speed, "400.0 MB/s", "then the last 20 s")
+check(pace.readout(at: second(30), showsBytes: true)?.remaining, "2m 40s", "time left over 20 s")
+check(pace.readout(at: second(30), showsBytes: false)?.speed, nil, "renders keep their FPS")
+var stuck = Pace()
+for t in stride(from: 0.0, through: 25, by: 0.5) { stuck.add(second(t), bytes: 5e9, fraction: 0.5) }
+check(stuck.readout(at: second(25), showsBytes: true), Readout(speed: "—", remaining: "—"), "nothing moved in 20 s")
+check(Format.speed(3.214e9), "3.21 GB/s", "gigabytes per second")
+
+// A verify job is named after the disk it reads back.
+var verify = Job(id: "v", url: "", kind: "Verify", startedAt: Date(), lastActivity: Date())
+verify.info = JobInfo(title: "D004", totalTasks: 1)
+check(verify.title, "D004", "no disks known yet")
+verify.info?.verified = ["A6MT3_20TB"]
+check([verify.title, verify.verifyLabel ?? ""], ["A6MT3_20TB", "Verify D004"], "one destination disk")
+verify.info?.verified = ["D004"]
+check([verify.title, verify.verifyLabel ?? "-"], ["D004 (card)", "-"], "the card itself")
+verify.info?.verified = ["A6MT3_TB", "BACKUP", "D004", "MAIN"]
+check([verify.title, verify.verifyLabel ?? ""], ["D004", "Verify on 3 disks"], "every copy at once")
 
 // Each readout part keeps room for its usual widest form.
 check(MenuBarStatus.room(for: "9%"), "00%", "one-digit percentage")

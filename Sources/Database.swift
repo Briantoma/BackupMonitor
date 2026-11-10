@@ -48,7 +48,7 @@ enum ProjectDatabase {
         let copies = """
             select r.ZRELATIVEPATH, r.ZFILESIZE, j.ZSOURCEFOLDER, j.ZWORKFLOW
             from ZACTIVITYTASK t
-            join ZVIDEORESOURCE r on r.Z_PK = t.ZSOURCERESOURCE
+            join \(resourceTable(database)) r on r.Z_PK = t.ZSOURCERESOURCE
             join ZVOLUME v on v.Z_PK = r.ZVOLUME
             join ZACTIVITYJOB j on j.Z_PK = t.ZJOB
             where t.Z_ENT = (select Z_ENT from Z_PRIMARYKEY where Z_NAME = 'CopyTask')
@@ -134,10 +134,11 @@ enum ProjectDatabase {
     private static func read(_ database: OpaquePointer, row: Int) -> JobInfo? {
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
+        let resources = resourceTable(database)
         let query = """
             select t.ZNAME, t.ZSIZE, t.ZEXECUTIONSTATUS, j.ZNAME, v.ZLABEL
             from ZACTIVITYTASK t join ZACTIVITYJOB j on j.Z_PK = t.ZJOB
-            left join ZVIDEORESOURCE r on r.Z_PK = t.ZSOURCERESOURCE
+            left join \(resources) r on r.Z_PK = t.ZSOURCERESOURCE
             left join ZVOLUME v on v.Z_PK = r.ZVOLUME
             where t.ZJOB = ?
             """
@@ -150,7 +151,41 @@ enum ProjectDatabase {
             info.add(name: text(statement, 0) ?? "", size: sqlite3_column_double(statement, 1),
                      isDone: Int(sqlite3_column_int(statement, 2)) == finishedStatus, source: text(statement, 4))
         }
+        info.verified = verifiedVolumes(database, row: row, resources: resources)
         return info.totalTasks > 0 ? info : nil
+    }
+
+    /// Silverstack 9 keeps files in ZVIDEORESOURCE, Lab 8 in ZFILERESOURCE.
+    private static func resourceTable(_ database: OpaquePointer) -> String {
+        names(database, "select name from sqlite_master where type = 'table' and name = 'ZVIDEORESOURCE'").isEmpty
+            ? "ZFILERESOURCE" : "ZVIDEORESOURCE"
+    }
+
+    /// The volumes a verify job reads back. The link table is numbered by entity, which differs
+    /// between Silverstack versions (Z_17VERIFYRESOURCES in XT 9, Z_20VERIFYRESOURCES in Lab 8).
+    private static func verifiedVolumes(_ database: OpaquePointer, row: Int, resources: String) -> [String] {
+        let query = "select name from sqlite_master where type = 'table' and name like 'Z\\_%VERIFYRESOURCES' escape '\\'"
+        guard let link = names(database, query).first else { return [] }
+        let columns = names(database, "select name from pragma_table_info('\(link)')")
+        guard let task = columns.first(where: { $0.hasSuffix("VERIFYTASKS") }),
+              let resource = columns.first(where: { $0.hasSuffix("VERIFYRESOURCES") }) else { return [] }
+        return names(database, """
+            select distinct v.ZLABEL from ZACTIVITYTASK t
+            join \(link) l on l.\(task) = t.Z_PK
+            join \(resources) r on r.Z_PK = l.\(resource)
+            join ZVOLUME v on v.Z_PK = r.ZVOLUME
+            where t.ZJOB = \(row) and v.ZLABEL is not null order by v.ZLABEL
+            """)
+    }
+
+    /// The first column of every row.
+    private static func names(_ database: OpaquePointer, _ query: String) -> [String] {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else { return [] }
+        var found: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW { if let name = text(statement, 0) { found.append(name) } }
+        return found
     }
 
     private static func text(_ statement: OpaquePointer?, _ column: Int32) -> String? {
