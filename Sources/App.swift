@@ -818,6 +818,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // Hovering mid-reveal finishes it at once, so the opened island is never blank.
         if store.isHovering && (store.islandGrowth < 1 || store.islandContent < 1) {
             islandRuns += 1
+            panel.alphaValue = 1
             withAnimation(.easeOut(duration: 0.2)) {
                 store.islandGrowth = 1
                 store.islandContent = 1
@@ -830,8 +831,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var islandOpenedByHover = false
     private var lastPrimary: Job?
 
-    /// Grows the island out of the notch over 2 seconds, then fades its contents in over 1 second;
-    /// the reverse when it goes. Opened by hovering the notch, it shows straight away.
+    /// Same timing as the menu bar pill: fades in (0.3 s), grows out of the notch (0.7 s, easing
+    /// out), then its contents fade in (0.25 s); the reverse when it goes. Opened by hovering the
+    /// notch, it shows straight away.
     private func fadeIsland(in show: Bool) {
         guard show != islandShown else { return }
         islandShown = show
@@ -849,25 +851,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                 islandOpenedByHover = instant
                 store.islandGrowth = instant ? 1 : 0
                 store.islandContent = instant ? 1 : 0
-                panel.alphaValue = 1
+                panel.alphaValue = instant ? 1 : 0
                 panel.orderFrontRegardless()
             }
-            let growing = store.islandGrowth < 1
-            withAnimation(.easeInOut(duration: 2)) { store.islandGrowth = 1 }
-            later(growing ? 2 : 0) { withAnimation(.easeIn(duration: 1)) { self.store.islandContent = 1 } }
+            let fading = panel.alphaValue < 1, growing = store.islandGrowth < 1
+            fadePanel(to: 1)
+            later(fading ? 0.3 : 0) {
+                withAnimation(Self.widening) { self.store.islandGrowth = 1 }
+                later(growing ? 0.7 : 0) { withAnimation(.easeIn(duration: 0.25)) { self.store.islandContent = 1 } }
+            }
         } else if islandOpenedByHover {
             // Opened at once by hovering between jobs, so it closes at once too.
             panel.orderOut(nil)
         } else {
             store.islandLeaving = lastPrimary
-            withAnimation(.easeOut(duration: 1)) { store.islandContent = 0 }
-            later(1) {
-                withAnimation(.easeInOut(duration: 2)) { self.store.islandGrowth = 0 }
-                later(2) {
-                    self.panel.orderOut(nil)
-                    self.store.islandLeaving = nil
+            withAnimation(.easeOut(duration: 0.25)) { store.islandContent = 0 }
+            later(0.25) {
+                withAnimation(Self.widening) { self.store.islandGrowth = 0 }
+                later(0.7) {
+                    self.fadePanel(to: 0)
+                    later(0.3) {
+                        self.panel.orderOut(nil)
+                        self.store.islandLeaving = nil
+                    }
                 }
             }
+        }
+    }
+
+    /// The pill's widening curve: cubic ease-out over 0.7 s.
+    private static let widening = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.7)
+
+    private func fadePanel(to alpha: CGFloat) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.3
+            panel.animator().alphaValue = alpha
         }
     }
 

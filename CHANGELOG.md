@@ -2,7 +2,7 @@
 
 ## 1.0.3 - 2026-11-10
 
-- The island grows out of the notch over 2 seconds when a job starts, then its ring and text fade in over 1 second; when it goes, the contents fade out and it shrinks back into the notch. Opened by hovering the notch between jobs, it still shows and hides at once.
+- The island appears with the same timing as the menu bar pill: it fades in, grows out of the notch, then its ring and text fade in; when it goes, the contents fade out and it shrinks back into the notch. Opened by hovering the notch between jobs, it still shows and hides at once.
 - The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
 - The menu bar readout fits its text, and grows or shrinks over half a second when the text gets longer or shorter, so the icons beside it move gently instead of jumping. A longer text waits until the pill has room for it, so nothing is ever cut off.
 - The readout sits on a pill that fades in as a circle and widens over one second, each part of the text (percentage, speed, time) fading in once it fits whole; at the end the text fades out, then the pill folds back the same way. In step with the display, and drawn on whole pixels so coloured pills keep clean edges. Neutral while copying, orange when a card is slow or the log goes quiet, red for errors or a failed job (until dismissed), green with "Done" for 2 seconds after the last job succeeds. Drawn by the app, so the text is no longer cut short with "…" while the width changes.
