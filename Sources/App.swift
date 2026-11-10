@@ -79,12 +79,12 @@ final class Store: ObservableObject {
     static let recentShown = 5
     static let settleDelay: TimeInterval = 5
 
-    @Published var jobs: [Job] = []
+    @Published var jobs: [Job] = [] { didSet { remember() } }
     @Published var recentJobs: [Job] = []
     @Published var volumes: [VolumeStatus] = []
     @Published var hiddenVolumes = Set(UserDefaults.standard.stringArray(forKey: "hiddenVolumes") ?? [])
     @Published var isEditingVolumes = false
-    @Published var demoJobs: [Job]?
+    @Published var demoJobs: [Job]? { didSet { remember() } }
     @Published var isHovering = false
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var now = Date()
@@ -92,8 +92,13 @@ final class Store: ObservableObject {
     /// How far the island has grown out of the notch, and how visible its contents are.
     @Published var islandGrowth: CGFloat = 1
     @Published var islandContent: Double = 1
-    /// The job the island keeps showing while it fades and shrinks away, after the list has emptied.
-    @Published var islandLeaving: Job?
+    /// The last job on show, kept the moment the list changes so the island can fade and shrink
+    /// away with it after the list has emptied, without a frame of nothing in between.
+    private(set) var lastPrimary: Job?
+
+    private func remember() {
+        if let primary { lastPrimary = primary }
+    }
     @Published var logProblem: String?
 
     private var sources: [LogSource] = []
@@ -423,7 +428,7 @@ struct IslandView: View {
     }
 
     @ViewBuilder private var collapsedContent: some View {
-        if let job = store.primary ?? store.islandLeaving {
+        if let job = store.primary ?? store.lastPrimary {
             HStack(spacing: 0) {
                 ring(job, size: 20)
                     .padding(.leading, 12)
@@ -814,8 +819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// Sized to the island so the rest of the menu bar stays clickable.
     private func layoutPanel() {
         let jobs = store.shown
-        if let primary = store.primary {
-            lastPrimary = primary
+        if store.primary != nil {
             // A job turned up while the island was open from hovering: it now closes the slow way.
             islandOpenedByHover = false
         }
@@ -847,7 +851,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var islandShown = false
     private var islandRuns = 0
     private var islandOpenedByHover = false
-    private var lastPrimary: Job?
 
     /// Same timing as the menu bar pill: fades in (0.3 s), grows out of the notch (0.7 s, easing
     /// out), then its contents fade in (0.25 s); the reverse when it goes. Opened by hovering the
@@ -863,7 +866,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             }
         }
         if show {
-            store.islandLeaving = nil
             if !panel.isVisible {
                 let instant = store.isHovering
                 islandOpenedByHover = instant
@@ -882,7 +884,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             // Opened at once by hovering between jobs, so it closes at once too.
             panel.orderOut(nil)
         } else {
-            store.islandLeaving = lastPrimary
             withAnimation(.easeOut(duration: 0.25)) { store.islandContent = 0 }
             later(0.25) {
                 withAnimation(Self.widening) { self.store.islandGrowth = 0 }
@@ -890,7 +891,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                     self.fadePanel(to: 0)
                     later(0.3) {
                         self.panel.orderOut(nil)
-                        self.store.islandLeaving = nil
                     }
                 }
             }

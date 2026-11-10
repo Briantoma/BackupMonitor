@@ -32,6 +32,18 @@ final class MenuBarPill: NSObject {
     private var isResizing: Bool { Date().timeIntervalSince(resizeStart) < Self.resize }
     /// Not moving, so the item's place in the menu bar is final.
     var isSettled: Bool { frames == nil }
+    private var colouredIcons: [NSColor: NSImage] = [:]
+
+    /// The drive symbol drawn in a colour: macOS draws menu bar icons in its own black or white and
+    /// ignores a tint.
+    private func colouredIcon(_ color: NSColor) -> NSImage? {
+        if let icon = colouredIcons[color] { return icon }
+        let icon = idleIcon?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [color]))
+        icon?.isTemplate = false
+        colouredIcons[color] = icon
+        return icon
+    }
+
     /// The drive icon's colour when there are no readouts to show, nil for the usual look.
     var iconTint: NSColor? {
         didSet { if iconTint != oldValue && frames == nil { apply() } }
@@ -159,9 +171,9 @@ final class MenuBarPill: NSObject {
         guard let button = item.button else { return }
         view.shape = PillShape(openness: openness)
         view.scale = button.window?.backingScaleFactor ?? 2
-        button.contentTintColor = openness == 0 ? iconTint : nil
         if openness == 0 {
-            if button.image !== idleIcon { button.image = idleIcon }
+            let icon = iconTint.map(colouredIcon) ?? idleIcon
+            if button.image !== icon { button.image = icon }
             if item.length != NSStatusItem.variableLength { item.length = NSStatusItem.variableLength }
             return
         }
