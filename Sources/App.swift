@@ -417,7 +417,8 @@ struct IslandView: View {
                 Text(shortStatus(job))
                     .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundColor(job.state == .running ? .white : tint(job))
-                    .frame(width: metrics.earWidth)
+                    .padding(.trailing, 12)
+                    .frame(width: metrics.earWidth, alignment: .trailing)
             }
             .frame(height: metrics.height)
         }
