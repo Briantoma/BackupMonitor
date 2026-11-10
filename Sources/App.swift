@@ -410,7 +410,9 @@ struct IslandView: View {
     @ViewBuilder private var collapsedContent: some View {
         if let job = store.primary ?? store.islandLeaving {
             HStack(spacing: 0) {
-                ring(job, size: 20).frame(width: metrics.earWidth)
+                ring(job, size: 20)
+                    .padding(.leading, 12)
+                    .frame(width: metrics.earWidth, alignment: .leading)
                 Spacer(minLength: metrics.notchWidth)
                 Text(shortStatus(job))
                     .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
