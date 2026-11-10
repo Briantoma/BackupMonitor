@@ -283,6 +283,17 @@ check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job"
 working.speed = "466.6 MB/s"
 check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), "25% · 466.6 MB/s", "speed after percent")
 
+// Each readout part keeps room for its usual widest form.
+check(MenuBarStatus.room(for: "9%"), "00%", "one-digit percentage")
+check(MenuBarStatus.room(for: "42%"), "00%", "two-digit percentage")
+check(MenuBarStatus.room(for: "13.2 MB/s"), "000.0 MB/s", "speed")
+check(MenuBarStatus.room(for: "1m 5s"), "1m 05s", "one-digit seconds")
+check(MenuBarStatus.room(for: "7s"), "07s", "seconds alone")
+check(MenuBarStatus.room(for: "2m 10s"), "2m 10s", "two-digit seconds")
+check(MenuBarStatus.room(for: "1h 2m"), "1h 2m", "hours and minutes")
+check(MenuBarStatus.room(for: "2 jobs"), "2 jobs", "job count")
+check(MenuBarStatus.room(for: "Done"), "Done", "words")
+
 // The pill: circle first, then the width, then the text.
 check(PillShape(openness: 0), PillShape(openness: -1), "closed")
 check(PillShape(openness: 0.15).alpha, 0.5, "circle fading in")

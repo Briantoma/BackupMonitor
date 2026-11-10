@@ -42,7 +42,7 @@ final class MenuBarPill: NSObject {
     /// The pill's width when fully open: the wheel's circle, then the text.
     private func fullWidth(_ text: String, wheel: Bool) -> CGFloat {
         guard !text.isEmpty else { return view.diameter }
-        let width = NSAttributedString(string: text, attributes: [.font: Self.font]).size().width
+        let width = PillPicture.slots(text).reduce(0) { $0 + $1.width }
         return ceil((wheel ? view.diameter : PillPicture.textInset) + width + PillPicture.textInset)
     }
 
@@ -202,6 +202,19 @@ final class PillPicture {
     /// Rounded to the screen's pixels: an edge between two pixels blends into the menu bar as a grey rim.
     func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
 
+    /// Each part of the text with the room it keeps, "· " included after the first, so numbers
+    /// changing length don't resize the pill or move the parts after them.
+    static func slots(_ text: String) -> [(piece: String, width: CGFloat, alignRight: Bool)] {
+        func width(_ string: String) -> CGFloat {
+            NSAttributedString(string: string, attributes: [.font: MenuBarPill.font]).size().width
+        }
+        return text.components(separatedBy: " · ").enumerated().map { index, part in
+            let lead = index == 0 ? "" : " · "
+            let room = max(width(lead + part), width(lead + MenuBarStatus.room(for: part)))
+            return (lead + part, room, part.hasSuffix("%"))
+        }
+    }
+
     func draw(in bounds: NSRect) {
         let mix = min(Date().timeIntervalSince(toneChanged) / MenuBarPill.toneFade, 1)
         let (fill, ink) = Self.blend(previousTone, tone, mix)
@@ -232,19 +245,18 @@ final class PillPicture {
         let now = Date()
         var x = pill.minX + (wheel ? diameter : Self.textInset)
         let reach = pill.maxX - Self.textInset
-        for (index, part) in text.components(separatedBy: " · ").enumerated() where !text.isEmpty {
-            let piece = (index == 0 ? "" : " · ") + part
-            let plain = NSAttributedString(string: piece, attributes: [.font: MenuBarPill.font])
-            let size = plain.size()
-            let fits = x + size.width <= reach + 4
+        for (index, slot) in Self.slots(text).enumerated() where !text.isEmpty {
+            let piece = slot.piece
+            let size = NSAttributedString(string: piece, attributes: [.font: MenuBarPill.font]).size()
+            let fits = x + slot.width <= reach + 4
             if !fits { shownSince[index] = nil } else if shownSince[index] == nil { shownSince[index] = now }
             let alpha = shownSince[index].map { min(now.timeIntervalSince($0) / MenuBarPill.textFade, 1) * textOut } ?? 0
             if alpha > 0 {
                 NSAttributedString(string: piece, attributes: [
                     .font: MenuBarPill.font, .foregroundColor: ink.withAlphaComponent(alpha),
-                ]).draw(at: NSPoint(x: x, y: pill.midY - size.height / 2))
+                ]).draw(at: NSPoint(x: slot.alignRight ? x + slot.width - size.width : x, y: pill.midY - size.height / 2))
             }
-            x += size.width
+            x += slot.width
         }
         NSGraphicsContext.restoreGraphicsState()
     }

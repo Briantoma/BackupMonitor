@@ -620,6 +620,20 @@ final class SpeedWatch {
     }
 }
 
+extension MenuBarStatus {
+    /// The text a readout part keeps room for, so the pill changes size less often: two-digit
+    /// percentages and seconds, and speeds up to 999.9 MB/s. Digits are all the same width.
+    static func room(for part: String) -> String {
+        if part.hasSuffix("%"), part.count <= 3 { return "00%" }
+        if part.hasSuffix("/s") && !part.hasSuffix("FPS/s") { return "000.0 MB/s" }
+        let words = part.split(separator: " ")
+        if let last = words.last, last.count == 2, last.hasSuffix("s"), last.first?.isNumber == true {
+            return (words.dropLast().map(String.init) + ["0" + last]).joined(separator: " ")
+        }
+        return part
+    }
+}
+
 enum PillTone: Equatable {
     case neutral, orange, red, green
 }
