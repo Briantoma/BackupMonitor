@@ -946,7 +946,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let image = job != nil && prefs.menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
         let tint: NSColor? = store.slow.isEmpty ? nil : .systemOrange
         let length = job == nil ? NSStatusItem.variableLength : runningLength(button)
-        if statusItem.length != length { statusItem.length = length }
         if button.title != text || button.contentTintColor != tint {
             var attributes: [NSAttributedString.Key: Any] = [.font: Self.readoutFont]
             if let tint { attributes[.foregroundColor] = tint }
@@ -954,6 +953,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             button.contentTintColor = tint
         }
         if button.image !== image { button.image = image }
+        if length != targetLength { animateLength(to: length, button) }
+    }
+
+    private var targetLength: CGFloat?
+    private var shownLength: CGFloat?
+    private var lengthAnimation: Timer?
+
+    /// Grows and shrinks over a quarter of a second instead of jumping, easing out.
+    private func animateLength(to target: CGFloat, _ button: NSStatusBarButton) {
+        targetLength = target
+        lengthAnimation?.invalidate()
+        // Between jobs the item sizes itself to the drive icon, which is also where a shrink ends.
+        let end = target == NSStatusItem.variableLength ? ceil(button.intrinsicContentSize.width) : target
+        guard let start = shownLength, abs(end - start) >= 1 else {
+            statusItem.length = target
+            shownLength = end
+            return
+        }
+        let began = Date()
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { return timer.invalidate() }
+                let progress = min(Date().timeIntervalSince(began) / 0.25, 1)
+                let width = start + (end - start) * (1 - pow(1 - progress, 3))
+                self.shownLength = width
+                self.statusItem.length = progress < 1 ? width : target
+                if progress >= 1 { timer.invalidate() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        lengthAnimation = timer
     }
 
     private static let readoutFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
