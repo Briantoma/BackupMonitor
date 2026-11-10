@@ -89,6 +89,11 @@ final class Store: ObservableObject {
     @Published var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var now = Date()
     @Published var slow: [SlowCard] = []
+    /// How far the island has grown out of the notch, and how visible its contents are.
+    @Published var islandGrowth: CGFloat = 1
+    @Published var islandContent: Double = 1
+    /// The job the island keeps showing while it fades and shrinks away, after the list has emptied.
+    @Published var islandLeaving: Job?
     @Published var logProblem: String?
 
     private var sources: [LogSource] = []
@@ -315,9 +320,12 @@ extension Job {
 struct IslandMetrics {
     var notchWidth: CGFloat
     var height: CGFloat
+    var hasNotch = true
     var earWidth: CGFloat = 64
     var expandedWidth: CGFloat = 460
     var collapsedWidth: CGFloat { notchWidth + earWidth * 2 }
+    /// Where the island grows from: the notch itself, or nothing on a screen without one.
+    var startWidth: CGFloat { hasNotch ? notchWidth : 0 }
 
     static func expandedHeight(running: Int, queued: Int, recent: Int, volumes: Int?, hovering: Bool, warning: Bool,
                                top: CGFloat) -> CGFloat {
@@ -370,7 +378,10 @@ struct IslandView: View {
             Group {
                 if expanded { expandedContent } else { collapsedContent }
             }
-            .frame(width: expanded ? metrics.expandedWidth : metrics.collapsedWidth, alignment: .top)
+            .opacity(store.islandContent)
+            .frame(width: expanded ? metrics.expandedWidth
+                       : metrics.startWidth + (metrics.collapsedWidth - metrics.startWidth) * store.islandGrowth,
+                   alignment: .top)
             .background(Color.black)
             .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: expanded ? 22 : 12,
                                               bottomTrailingRadius: expanded ? 22 : 12))
@@ -397,7 +408,7 @@ struct IslandView: View {
     }
 
     @ViewBuilder private var collapsedContent: some View {
-        if let job = store.primary {
+        if let job = store.primary ?? store.islandLeaving {
             HStack(spacing: 0) {
                 ring(job, size: 20).frame(width: metrics.earWidth)
                 Spacer(minLength: metrics.notchWidth)
@@ -745,7 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private static func measure(_ screen: NSScreen) -> IslandMetrics {
         guard screen.safeAreaInsets.top > 0,
               let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
-            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6)
+            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6, hasNotch: false)
         }
         return IslandMetrics(notchWidth: screen.frame.width - left.width - right.width,
                              height: screen.safeAreaInsets.top)
@@ -785,6 +796,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// Sized to the island so the rest of the menu bar stays clickable.
     private func layoutPanel() {
         let jobs = store.shown
+        if let primary = store.primary {
+            lastPrimary = primary
+            // A job turned up while the island was open from hovering: it now closes the slow way.
+            islandOpenedByHover = false
+        }
         let recent = store.isHovering ? store.recent.count : 0
         guard prefs.showIsland, !jobs.isEmpty || store.isHovering else { return fadeIsland(in: false) }
         let expanded = store.isHovering || jobs.contains { $0.state == .failed }
@@ -799,31 +815,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let frame = topCentered(size)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
         fadeIsland(in: true)
+        // Hovering mid-reveal finishes it at once, so the opened island is never blank.
+        if store.isHovering && (store.islandGrowth < 1 || store.islandContent < 1) {
+            islandRuns += 1
+            withAnimation(.easeOut(duration: 0.2)) {
+                store.islandGrowth = 1
+                store.islandContent = 1
+            }
+        }
     }
 
     private var islandShown = false
-    private var islandFades = 0
+    private var islandRuns = 0
+    private var islandOpenedByHover = false
+    private var lastPrimary: Job?
 
-    /// Fades the island in or out instead of popping it on and off. A fade out is called off
-    /// if the island is needed again before it ends.
+    /// Grows the island out of the notch over 2 seconds, then fades its contents in over 1 second;
+    /// the reverse when it goes. Opened by hovering the notch, it shows straight away.
     private func fadeIsland(in show: Bool) {
         guard show != islandShown else { return }
         islandShown = show
-        islandFades += 1
-        let fade = islandFades
-        if show && !panel.isVisible {
-            panel.alphaValue = 0
-            panel.orderFrontRegardless()
-        }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            panel.animator().alphaValue = show ? 1 : 0
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !show, fade == self.islandFades else { return }
-                self.panel.orderOut(nil)
+        islandRuns += 1
+        let run = islandRuns
+        func later(_ delay: Double, _ work: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                if self?.islandRuns == run { work() }
             }
-        })
+        }
+        if show {
+            store.islandLeaving = nil
+            if !panel.isVisible {
+                let instant = store.isHovering
+                islandOpenedByHover = instant
+                store.islandGrowth = instant ? 1 : 0
+                store.islandContent = instant ? 1 : 0
+                panel.alphaValue = 1
+                panel.orderFrontRegardless()
+            }
+            let growing = store.islandGrowth < 1
+            withAnimation(.easeInOut(duration: 2)) { store.islandGrowth = 1 }
+            later(growing ? 2 : 0) { withAnimation(.easeIn(duration: 1)) { self.store.islandContent = 1 } }
+        } else if islandOpenedByHover {
+            // Opened at once by hovering between jobs, so it closes at once too.
+            panel.orderOut(nil)
+        } else {
+            store.islandLeaving = lastPrimary
+            withAnimation(.easeOut(duration: 1)) { store.islandContent = 0 }
+            later(1) {
+                withAnimation(.easeInOut(duration: 2)) { self.store.islandGrowth = 0 }
+                later(2) {
+                    self.panel.orderOut(nil)
+                    self.store.islandLeaving = nil
+                }
+            }
+        }
     }
 
     /// Shown while Settings or About is open. Without it the windows get no Cmd-W, and the text
