@@ -846,6 +846,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private func setUpMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.imagePosition = .imageLeading
+        // With a fixed width, the wheel stays put and the numbers change beside it.
+        statusItem.button?.alignment = .left
         statusItem.autosaveName = "BackupMonitor"
         statusItem.isVisible = prefs.showMenuBar
         updateStatusItem()
@@ -943,13 +945,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let job = MenuBarStatus.active(jobs)
         let image = job != nil && prefs.menuBarOptions.contains(.wheel) ? Self.wheel(job?.fraction ?? 0) : Self.idleIcon
         let tint: NSColor? = store.slow.isEmpty ? nil : .systemOrange
+        let length = job == nil ? NSStatusItem.variableLength : runningLength(button)
+        if statusItem.length != length { statusItem.length = length }
         if button.title != text || button.contentTintColor != tint {
-            var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)]
+            var attributes: [NSAttributedString.Key: Any] = [.font: Self.readoutFont]
             if let tint { attributes[.foregroundColor] = tint }
             button.attributedTitle = NSAttributedString(string: text, attributes: attributes)
             button.contentTintColor = tint
         }
         if button.image !== image { button.image = image }
+    }
+
+    private static let readoutFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    private var measured: (options: MenuBarOptions, length: CGFloat)?
+
+    /// One width for the whole job, so the icons beside it don't shift as the numbers change.
+    private func runningLength(_ button: NSStatusBarButton) -> CGFloat {
+        let options = prefs.menuBarOptions
+        if let measured, measured.options == options { return measured.length }
+        let title = button.attributedTitle, image = button.image
+        button.image = options.contains(.wheel) ? Self.wheel(0) : Self.idleIcon
+        let width = MenuBarStatus.widest(options: options).map { sample -> CGFloat in
+            button.attributedTitle = NSAttributedString(string: sample, attributes: [.font: Self.readoutFont])
+            return button.intrinsicContentSize.width
+        }.max() ?? 0
+        button.attributedTitle = title
+        button.image = image
+        let length = ceil(width) + 4
+        measured = (options, length)
+        return length
     }
 
     private static func wheel(_ fraction: Double) -> NSImage {

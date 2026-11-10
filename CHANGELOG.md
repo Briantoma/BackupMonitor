@@ -3,6 +3,7 @@
 ## 1.0.3 - 2026-11-10
 
 - The menu bar menu shows the same job rows as the island: progress bars, details, current file, queued and recently completed jobs, updating while the menu is open.
+- The menu bar readout keeps one width for the whole job, sized for the widest numbers it can show, so the icons beside it no longer shift.
 
 ## 1.0.2 - 2026-11-09
 

@@ -282,6 +282,10 @@ check(MenuBarStatus.text(for: [working, waiting], options: [.percent, .remaining
 check(MenuBarStatus.text(for: [working], options: [.jobCount], now: at), "1 job", "singular")
 working.speed = "466.6 MB/s"
 check(MenuBarStatus.text(for: [working], options: [.percent, .speed], now: at), "25% · 466.6 MB/s", "speed after percent")
+check(MenuBarStatus.widest(options: [.percent, .speed, .remaining]),
+      ["99% · 999.9 MB/s · 59m 59s", "99% · 999.9 MB/s · 99h 59m", "99% · 99.99 GB/s · 59m 59s", "99% · 99.99 GB/s · 99h 59m"],
+      "widest readouts in the same order as the text")
+check(MenuBarStatus.widest(options: [.wheel]), [""], "wheel alone has no text")
 
 // Card groups come from full card names, or the camera letter of reel-style names.
 var rules = CardRules.standard
