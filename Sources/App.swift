@@ -954,13 +954,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
         followedJob = active?.id
         let green = (greenUntil ?? .distantPast) > now && active == nil
-        let samples = MenuBarStatus.widest(options: options)
-        let hasText = samples.contains { !$0.isEmpty }
+        let hasText = !options.subtracting(.wheel).isEmpty
         let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, now: now)
         let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
         pill.update(open: active != nil || failed || green, text: text,
                     fraction: green ? 1 : active?.fraction, wheel: options.contains(.wheel), tone: tone,
-                    fullWidth: pill.fullWidth(texts: samples + (hasText ? ["Failed", "Done"] : []), wheel: options.contains(.wheel)))
+                    fullWidth: pill.fullWidth(text: text, wheel: options.contains(.wheel)))
         statusItem.button?.setAccessibilityLabel(text.isEmpty ? "Backup Monitor" : "Backup Monitor, \(text)")
     }
 }

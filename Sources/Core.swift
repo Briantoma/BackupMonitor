@@ -509,17 +509,6 @@ enum MenuBarStatus {
         return parts.joined(separator: " · ")
     }
 
-    /// The widest texts the chosen readouts can show. The menu bar item is sized for the widest
-    /// of them while a job runs, so it keeps one width from start to finish.
-    static func widest(options: MenuBarOptions) -> [String] {
-        var samples = [""]
-        func add(_ choices: [String]) { samples = samples.flatMap { base in choices.map { base.isEmpty ? $0 : base + " · " + $0 } } }
-        if options.contains(.percent) { add(["99%"]) }
-        if options.contains(.speed) { add(["999.9 MB/s", "99.99 GB/s"]) }
-        if options.contains(.remaining) { add(["59m 59s", "99h 59m"]) }
-        if options.contains(.jobCount) { add(["99 jobs"]) }
-        return samples
-    }
 }
 
 enum CardGroup: String, CaseIterable {

@@ -1,12 +1,15 @@
 import AppKit
 
 /// The menu bar readout while a job runs: a pill that fades in as a circle, widens to fit the
-/// numbers and folds back the same way, coloured by how the copy is going. Drawn by hand, so the
+/// numbers, follows them as they get longer or shorter, and folds back the same way, coloured by
+/// how the copy is going. Drawn by hand, so the
 /// text is never cut short with "…" while the width changes.
 @MainActor
 final class MenuBarPill {
     static let duration: TimeInterval = 1
     static let toneFade: TimeInterval = 0.3
+    /// As slow as the widening, so a new digit never makes the menu bar jump.
+    static let resize: TimeInterval = 0.5
     static let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
     /// Room left between the pill and the items beside it.
     static let margin: CGFloat = 3
@@ -18,6 +21,10 @@ final class MenuBarPill {
     private var target: Double = 0
     private var timer: Timer?
     private var lastFrame = Date()
+    private var resizeFrom: CGFloat = 0
+    private var resizeTo: CGFloat = 0
+    private var resizeStart = Date.distantPast
+    private var isResizing: Bool { Date().timeIntervalSince(resizeStart) < Self.resize }
 
     var diameter: CGFloat { view.diameter }
 
@@ -34,25 +41,40 @@ final class MenuBarPill {
     }
 
     /// The pill's width when fully open: the wheel's circle, then the text.
-    func fullWidth(texts: [String], wheel: Bool) -> CGFloat {
-        let text = texts.map { NSAttributedString(string: $0, attributes: [.font: Self.font]).size().width }.max() ?? 0
-        guard text > 0 else { return diameter }
-        return ceil((wheel ? diameter : 10) + text + 10)
+    func fullWidth(text: String, wheel: Bool) -> CGFloat {
+        guard !text.isEmpty else { return diameter }
+        let width = NSAttributedString(string: text, attributes: [.font: Self.font]).size().width
+        return ceil((wheel ? diameter : 10) + width + 10)
     }
 
     func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone, fullWidth: CGFloat) {
+        target = open ? 1 : 0
+        // Closing keeps the last text and width, so the text fades out rather than vanishing.
+        guard open || openness == 0 else { return keepAnimating() }
         view.text = text
         view.fraction = fraction ?? 0
         view.wheel = wheel
-        view.fullWidth = max(fullWidth, diameter)
+        let width = max(fullWidth, diameter)
+        if openness == 0 {
+            // Closed: the opening itself will widen it.
+            view.fullWidth = width
+            resizeTo = width
+        } else if width != resizeTo {
+            resizeFrom = view.fullWidth
+            resizeTo = width
+            resizeStart = Date()
+        }
         if tone != view.tone {
             view.previousTone = view.tone
             view.tone = tone
             view.toneChanged = Date()
         }
-        target = open ? 1 : 0
+        keepAnimating()
+    }
+
+    private func keepAnimating() {
         view.needsDisplay = true
-        if timer == nil && (openness != target || view.isFading) { startAnimating() }
+        if timer == nil && (openness != target || view.isFading || isResizing) { startAnimating() }
         if timer == nil { apply() }
     }
 
@@ -71,8 +93,10 @@ final class MenuBarPill {
         let move = now.timeIntervalSince(lastFrame) / Self.duration
         lastFrame = now
         openness = target > openness ? min(openness + move, target) : max(openness - move, target)
+        let resized = min(now.timeIntervalSince(resizeStart) / Self.resize, 1)
+        view.fullWidth = resizeFrom + (resizeTo - resizeFrom) * (1 - pow(1 - resized, 3))
         apply()
-        if openness == target && !view.isFading {
+        if openness == target && !view.isFading && !isResizing {
             timer?.invalidate()
             timer = nil
         }
