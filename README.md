@@ -4,6 +4,8 @@
 
 Follows Silverstack offload, verify and transcode progress at the top of the screen and in the menu bar, and warns when a card copies too slowly. For Silverstack XT and Silverstack Lab; Offload Manager is not supported. Not affiliated with Pomfort. Original idea from Joe Jamieson.
 
+!! Known bug, verify speed is not accurate!!
+
 Open the DMG and drag Backup Monitor to Applications. Apple Silicon and Intel, macOS 13 or later. Signed by Oz Color and notarized by Apple, so it opens like any downloaded app. At first launch, allow notifications.
 
 ## Island
