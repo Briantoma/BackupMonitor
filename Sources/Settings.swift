@@ -17,6 +17,11 @@ final class Preferences: ObservableObject {
     /// Two items per side of the closed island: on the left from the outer edge in, on the right from the notch out.
     @Published var notchLeft: [NotchItem] { didSet { defaults.set(notchLeft.map(\.rawValue).joined(separator: ","), forKey: "notchLeft") } }
     @Published var notchRight: [NotchItem] { didSet { defaults.set(notchRight.map(\.rawValue).joined(separator: ","), forKey: "notchRight") } }
+    /// Past jobs in the island and the menu, and how many.
+    @Published var showPastJobs: Bool { didSet { defaults.set(showPastJobs, forKey: "showPastJobs") } }
+    @Published var pastJobs: PastJobsShown { didSet { defaults.set(pastJobs.rawValue, forKey: "pastJobs") } }
+    /// How long the pointer must rest on the notch before the island opens, in seconds.
+    @Published var hoverDelay: Double { didSet { defaults.set(hoverDelay, forKey: "hoverDelay") } }
     @Published var rules: CardRules {
         didSet {
             defaults.set(Dictionary(uniqueKeysWithValues: rules.entries.map { ($0.key.rawValue, $0.value) }), forKey: "cardEntries")
@@ -37,6 +42,9 @@ final class Preferences: ObservableObject {
         notifyJobs = flag("notifyJobs", false)
         notifyLogs = flag("notifyLogs", false)
         refreshInterval = defaults.object(forKey: "refreshInterval") as? Double ?? 5
+        showPastJobs = flag("showPastJobs", true)
+        pastJobs = PastJobsShown(rawValue: defaults.string(forKey: "pastJobs") ?? "") ?? .last5
+        hoverDelay = defaults.object(forKey: "hoverDelay") as? Double ?? 0
         notchLeft = NotchItem.list(defaults.string(forKey: "notchLeft"), [.ring, .none])
         notchRight = NotchItem.list(defaults.string(forKey: "notchRight"), [.percent, .none])
         var rules = CardRules.standard
@@ -159,11 +167,24 @@ struct SettingsView: View {
                 Picker("Update speed and time left every", selection: $prefs.refreshInterval) {
                     ForEach([1.0, 2, 5, 10], id: \.self) { Text("\(Int($0)) s").tag($0) }
                 }
+                HStack {
+                    Toggle("Past jobs", isOn: $prefs.showPastJobs)
+                    Spacer()
+                    Picker("", selection: $prefs.pastJobs) {
+                        ForEach(PastJobsShown.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                    .disabled(!prefs.showPastJobs)
+                }
             }
             Section {
                 NotchPreview(left: prefs.notchLeft, right: prefs.notchRight, hasNotch: hasNotch)
                 side(hasNotch ? "Left of the notch" : "Left", \.notchLeft)
                 side(hasNotch ? "Right of the notch" : "Right", \.notchRight)
+                Picker("Open when the pointer rests on it for", selection: $prefs.hoverDelay) {
+                    Text("No delay").tag(0.0)
+                    ForEach([0.5, 1, 2], id: \.self) { Text("\($0.formatted()) s").tag($0) }
+                }
             } header: {
                 HStack(spacing: 4) {
                     Text("Island")
@@ -255,7 +276,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 440)
-        .fixedSize(horizontal: false, vertical: true)
+        // Its full height is more than a 1080p screen shows, so it scrolls within the screen there.
+        .frame(height: min(1300, (NSScreen.main?.visibleFrame.height ?? 900) - 40))
         .onAppear {
             updater.checkIfStale()
             store.refreshVolumes()
@@ -328,3 +350,4 @@ struct NotchPreview: View {
         }
     }
 }
+

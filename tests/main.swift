@@ -402,4 +402,31 @@ check(["com.pomfort.SilverstackXT9 2026-11-10--10-52-41-000.log", "com.pomfort.S
        "com.pomfort.SilverstackFileToolService 2026-11-10--10-52-41-897.log", "notes.txt"].map(LogFollower.isAppLog),
       [true, true, false, false], "app logs only")
 
+// Past jobs: saved between launches, and the menu's choice of how many.
+func pastJob(_ id: String, endedDaysAgo days: Double, now: Date) -> Job {
+    var job = Job(id: id, url: "x-coredata://S/CopyJob/p1", kind: "Copy", startedAt: now, lastActivity: now)
+    job.state = .succeeded
+    job.endedAt = now.addingTimeInterval(-days * 86400)
+    job.info = JobInfo(title: "CARD_\(id)", totalBytes: 5e9, totalTasks: 3)
+    return job
+}
+let noon = ISO8601DateFormatter().date(from: "2026-11-18T12:00:00Z")!
+var utc = Calendar(identifier: .gregorian)
+utc.timeZone = TimeZone(identifier: "UTC")!
+let finishedJobs = [pastJob("a", endedDaysAgo: 0.1, now: noon), pastJob("b", endedDaysAgo: 1, now: noon),
+                    pastJob("c", endedDaysAgo: 20, now: noon)]
+let savedJobs = PastJob.merge(finishedJobs, into: [], now: noon)
+check(savedJobs.map(\.id), ["a", "b"], "newest first, older than 14 days dropped")
+let reloaded = try! JSONDecoder().decode([PastJob].self, from: JSONEncoder().encode(savedJobs)).map(\.job)
+check(reloaded.map(\.title), ["CARD_a", "CARD_b"], "titles survive a relaunch")
+check(reloaded.map(\.state), [.succeeded, .succeeded], "states survive a relaunch")
+check(reloaded[0].info?.totalBytes, 5e9, "sizes survive a relaunch")
+var renamed = finishedJobs[0]
+renamed.info?.title = "LATER"
+check(PastJob.merge([renamed], into: savedJobs, now: noon).map { $0.title ?? "" }, ["LATER", "CARD_b"], "a job updates in place")
+let pastRows = RecentRow.group(reloaded)
+check(PastJobsShown.today.pick(pastRows, now: noon, calendar: utc).map(\.title), ["CARD_a"], "today only")
+check(PastJobsShown.week.pick(pastRows, now: noon, calendar: utc).count, 2, "this week")
+check(PastJobsShown.last5.pick(pastRows, now: noon).count, 2, "last 5 of 2")
+
 if failures == 0 { print("All tests passed") } else { exit(1) }

@@ -1,6 +1,6 @@
 import Foundation
 
-enum JobState: Equatable {
+enum JobState: String {
     case running, paused, finishing, succeeded, failed, cancelled
 
     var isFinished: Bool { self == .succeeded || self == .failed || self == .cancelled }
@@ -475,6 +475,72 @@ struct RecentRow: Identifiable {
             }
         }
         return rows
+    }
+}
+
+/// How many past jobs the menu bar menu lists.
+enum PastJobsShown: String, CaseIterable {
+    case today, week, last5, last10, last20
+
+    var label: String {
+        switch self {
+        case .today: return "Today"
+        case .week: return "This week"
+        case .last5: return "Last 5"
+        case .last10: return "Last 10"
+        case .last20: return "Last 20"
+        }
+    }
+
+    /// Rows newest first, as RecentRow.group keeps them.
+    func pick(_ rows: [RecentRow], now: Date, calendar: Calendar = .current) -> [RecentRow] {
+        func ended(_ row: RecentRow) -> Date { row.jobs[0].endedAt ?? .distantPast }
+        switch self {
+        case .today: return rows.filter { calendar.isDate(ended($0), inSameDayAs: now) }
+        case .week: return rows.filter { calendar.isDate(ended($0), equalTo: now, toGranularity: .weekOfYear) }
+        case .last5: return Array(rows.prefix(5))
+        case .last10: return Array(rows.prefix(10))
+        case .last20: return Array(rows.prefix(20))
+        }
+    }
+}
+
+/// A finished job as saved between launches, so "This week" survives a restart or an update.
+struct PastJob: Codable, Equatable {
+    var id, url, kind: String
+    var workflow, title: String?
+    var state: String
+    var started, ended: Date
+    var bytes: Double
+    var tasks: Int
+    var verified: [String]
+
+    static let keep: TimeInterval = 14 * 86400
+    static let limit = 300
+
+    init(_ job: Job) {
+        id = job.id; url = job.url; kind = job.kind; workflow = job.workflow; title = job.info?.title
+        state = job.state.rawValue; started = job.startedAt; ended = job.endedAt ?? job.lastActivity
+        bytes = job.info?.totalBytes ?? 0; tasks = job.info?.totalTasks ?? 0; verified = job.info?.verified ?? []
+    }
+
+    var job: Job {
+        var job = Job(id: id, url: url, kind: kind, workflow: workflow, startedAt: started, lastActivity: ended)
+        job.state = JobState(rawValue: state) ?? .succeeded
+        job.endedAt = ended
+        if let title {
+            job.info = JobInfo(title: title, totalBytes: bytes, totalTasks: tasks)
+            job.info?.verified = verified
+        }
+        return job
+    }
+
+    /// The newest copy of each job wins; newest first, the last 14 days, at most 300.
+    static func merge(_ finished: [Job], into saved: [PastJob], now: Date) -> [PastJob] {
+        var byID = Dictionary(saved.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for job in finished { byID[job.id] = PastJob(job) }
+        return Array(byID.values.filter { now.timeIntervalSince($0.ended) <= keep }
+            .sorted { $0.ended > $1.ended }.prefix(limit))
     }
 }
 

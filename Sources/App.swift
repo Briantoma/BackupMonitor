@@ -76,7 +76,6 @@ enum VolumeScanner {
 final class Store: ObservableObject {
     static let keepFinished: TimeInterval = 8
     static let silentAfter: TimeInterval = 20
-    static let recentShown = 5
     static let settleDelay: TimeInterval = 5
 
     @Published var jobs: [Job] = [] { didSet { remember() } }
@@ -112,6 +111,10 @@ final class Store: ObservableObject {
     private var isScanning = false
     private var scanAgain = false
     private let speedWatch = SpeedWatch()
+    private var lastFinished: [String] = []
+    /// Finished jobs kept between launches, newest first.
+    private var saved: [PastJob] = UserDefaults.standard.data(forKey: "pastJobs.saved")
+        .flatMap { try? JSONDecoder().decode([PastJob].self, from: $0) } ?? []
     private var notifiedSlow = Set<String>()
     private var seenFinished = Set<String>()
 
@@ -119,7 +122,10 @@ final class Store: ObservableObject {
     /// Finished jobs newest first, leaving out any still on show as a live row.
     var recent: [RecentRow] {
         let live = Set(shown.map(\.id))
-        return Array(RecentRow.group(recentJobs.filter { !live.contains($0.id) }).prefix(Self.recentShown))
+        let prefs = Preferences.shared
+        guard prefs.showPastJobs else { return [] }
+        // The clock itself: `now` stands still between jobs.
+        return prefs.pastJobs.pick(RecentRow.group(recentJobs.filter { !live.contains($0.id) }), now: Date())
     }
     var running: [Job] { shown.filter { !$0.isWaiting } }
     var queued: [Job] { shown.filter(\.isWaiting) }
@@ -134,6 +140,7 @@ final class Store: ObservableObject {
     var primary: Job? { running.first { !$0.state.isFinished } ?? queued.first ?? shown.last }
 
     func start() {
+        recentJobs = saved.map(\.job)
         findSources()
         // Common modes, so progress keeps moving while the menu bar menu is open.
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
@@ -229,10 +236,13 @@ final class Store: ObservableObject {
             logProblem = problem
             if let problem, prefs.notifyLogs { Notifier.post(id: "logs", title: "Backup Monitor can't follow Silverstack", body: problem) }
         }
-        let finished = sources.flatMap(\.tracker.recent).sorted { $0.endedAt ?? .distantPast > $1.endedAt ?? .distantPast }
-        if finished.map(\.signature) != recentJobs.map(\.signature) {
+        let finished = sources.flatMap(\.tracker.recent)
+        if finished.map(\.signature) != lastFinished {
+            lastFinished = finished.map(\.signature)
             for job in finished where seenFinished.insert(job.id).inserted && prefs.notifyJobs { announce(job) }
-            recentJobs = finished
+            saved = PastJob.merge(finished, into: saved, now: Date())
+            if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: "pastJobs.saved") }
+            recentJobs = saved.map(\.job)
             refreshVolumes()
             // The log can get ahead of the database saving the job as finished.
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in self?.refreshVolumes() }
@@ -455,11 +465,17 @@ struct Palette {
                               faint: Color(nsColor: .tertiaryLabelColor), track: .primary.opacity(0.12), button: .secondary)
 }
 
+/// One row of the menu bar menu. Each is its own menu item, so macOS scrolls a menu taller than the screen.
+enum MenuPart {
+    case job(String), compact(String), more(Int), pastHeader, past(RecentRow)
+}
+
 struct IslandView: View {
     @ObservedObject var store: Store
     let metrics: IslandMetrics
-    /// The job rows alone, for the menu bar menu.
-    var inMenu = false
+    /// A row for the menu bar menu instead of the island.
+    var part: MenuPart?
+    private var inMenu: Bool { part != nil }
     private var palette: Palette { inMenu ? .menu : .island }
 
     private var expanded: Bool {
@@ -467,17 +483,27 @@ struct IslandView: View {
     }
 
     var body: some View {
-        if inMenu { menuContent } else { island }
+        if let part { menuRow(part) } else { island }
     }
 
-    private var menuContent: some View {
-        VStack(spacing: 8) {
-            jobList
-            if !store.recent.isEmpty { recentList }
+    /// Live while the menu is open: a job row looks its job up again on every change.
+    private func menuRow(_ part: MenuPart) -> some View {
+        Group {
+            switch part {
+            case .job(let id): if let job = store.shown.first(where: { $0.id == id }) { row(job).frame(height: 84) }
+            case .compact(let id): if let job = store.shown.first(where: { $0.id == id }) { compactRow(job).frame(height: 26) }
+            case .more(let count):
+                Text("+\(count) more").font(.system(size: 11.5)).foregroundColor(palette.faint).frame(height: 22)
+            case .pastHeader:
+                Text("Recently completed").font(.system(size: 11, weight: .semibold)).foregroundColor(palette.faint)
+                    .frame(height: 22, alignment: .bottom)
+            case .past(let row): recentRow(row).frame(height: 26)
+            }
         }
         .foregroundColor(palette.text)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
         .frame(width: 400)
     }
 
@@ -812,6 +838,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var metrics = IslandMetrics(notchWidth: 190, height: 37)
     private var refresh: Any?
     private var hoverTimer: Timer?
+    /// When the pointer arrived on the closed island, for the delay before it opens.
+    private var hoverSince: Date?
     private let menu = NSMenu()
     private static let idleIcon = NSImage(systemSymbolName: "externaldrive.badge.checkmark",
                                           accessibilityDescription: "Backup Monitor")
@@ -905,7 +933,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // jobs without menu bar items beside it setting it off. Grown slightly because the
         // cursor can rest on the very top edge of the screen.
         let target = panel.isVisible ? panel.frame : notchFrame
-        let inside = target.insetBy(dx: 0, dy: -2).contains(NSEvent.mouseLocation)
+        let pointer = target.insetBy(dx: 0, dy: -2).contains(NSEvent.mouseLocation)
+        if !pointer { hoverSince = nil } else if hoverSince == nil { hoverSince = Date() }
+        // Opening waits until the pointer has rested there for the delay set in Settings; closing doesn't.
+        let inside = pointer && (store.isHovering || Date().timeIntervalSince(hoverSince ?? Date()) >= prefs.hoverDelay)
         if inside && !store.isHovering { store.refreshVolumes() }
         if inside != store.isHovering { store.isHovering = inside }
         if !inside && store.isEditingVolumes { store.isEditingVolumes = false }
@@ -1083,14 +1114,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             menu.addItem(.separator())
         }
         // The island's job rows, live while the menu is open. Jobs starting meanwhile show at the next opening.
-        if !store.shown.isEmpty || !store.recent.isEmpty {
-            let rows = NSHostingView(rootView: IslandView(store: store, metrics: metrics, inMenu: true))
-            rows.frame.size = rows.fittingSize
+        let listed = store.listed, past = store.recent
+        var parts: [MenuPart] = listed.full.map { .job($0.id) } + listed.compact.map { .compact($0.id) }
+        if listed.more > 0 { parts.append(.more(listed.more)) }
+        if !past.isEmpty { parts += [.pastHeader] + past.map { .past($0) } }
+        for part in parts {
+            let row = NSHostingView(rootView: IslandView(store: store, metrics: metrics, part: part))
+            row.frame.size = row.fittingSize
             let item = NSMenuItem()
-            item.view = rows
+            item.view = row
             menu.addItem(item)
-            menu.addItem(.separator())
         }
+        if !parts.isEmpty { menu.addItem(.separator()) }
         let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")
         header.isEnabled = false
         if store.visibleVolumes.isEmpty {
@@ -1098,10 +1133,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
         for volume in store.visibleVolumes { menu.addItem(item(for: volume)) }
         menu.addItem(.separator())
+        let island = menu.addItem(withTitle: "Show Island", action: #selector(toggleIsland), keyEquivalent: "")
+        island.target = self
+        island.state = prefs.showIsland ? .on : .off
+        let pastJobs = menu.addItem(withTitle: "Show Past Jobs", action: #selector(togglePastJobs), keyEquivalent: "")
+        pastJobs.target = self
+        pastJobs.state = prefs.showPastJobs ? .on : .off
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "About Backup Monitor", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit Backup Monitor", action: #selector(NSApplication.terminate), keyEquivalent: "q")
     }
+
+    @objc private func toggleIsland() { prefs.showIsland.toggle() }
+    @objc private func togglePastJobs() { prefs.showPastJobs.toggle() }
 
     private func item(for volume: VolumeStatus) -> NSMenuItem {
         let item = NSMenuItem(title: volume.name, action: #selector(reveal), keyEquivalent: "")

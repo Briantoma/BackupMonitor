@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6 - 2026-11-18
+
+- Past jobs can be hidden from the island and the menu (Show Past Jobs in the menu, or Settings), and Settings chooses how many: today's, this week's, or the last 5, 10 or 20. Finished jobs are now kept between launches for 14 days, so This week survives a restart or an update.
+- The island can wait until the pointer has rested on the notch for 0.5, 1 or 2 seconds before opening (Settings).
+- Show Island in the menu bar menu turns the island on and off.
+- The menu scrolls when it is taller than the screen, as on a 1920x1080 display: each job row is its own menu item. Settings also fits the screen's height and scrolls.
+
 ## 1.0.5 - 2026-11-10
 
 - Fixes progress, speed and time left freezing or jumping during copies and verifies with newer Silverstack XT 9 versions. Those also write a FileToolService log in the same folder, and while it was the newest file Backup Monitor read it instead of Silverstack's own log. Only Silverstack's own log is followed now, and switching between log files never reads one again from the start.
