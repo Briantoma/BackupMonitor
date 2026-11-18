@@ -94,6 +94,10 @@ enum SettingsWindow {
 /// when the last one closes.
 enum DockPresence {
     static func show() {
+        // An app that starts without a Dock icon can show a blank one once it gains it, so it is set by hand.
+        if let icon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap(NSImage.init(contentsOf:)) {
+            NSApp.applicationIconImage = icon
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -153,17 +157,6 @@ struct SettingsView: View {
                 Toggle("Menu bar icon", isOn: Binding(get: { prefs.showMenuBar }, set: { on in
                     if on || prefs.showIsland { prefs.showMenuBar = on } else { NSSound.beep() }
                 }))
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Menu bar shows")
-                    HStack {
-                        option("Percentage", .percent, help: "Percentage done")
-                        option("Speed", .speed, help: "Copy, verify or render speed")
-                        option("Time left", .remaining, help: "Time remaining")
-                        option("Jobs", .jobCount, help: "Number of jobs")
-                        option("Wheel", .wheel, help: "Progress wheel")
-                    }
-                }
-                .disabled(!prefs.showMenuBar)
                 Picker("Update speed and time left every", selection: $prefs.refreshInterval) {
                     ForEach([1.0, 2, 5, 10], id: \.self) { Text("\(Int($0)) s").tag($0) }
                 }
@@ -178,12 +171,29 @@ struct SettingsView: View {
                 }
             }
             Section {
+                MenuBarPreview(options: prefs.menuBarOptions)
+                HStack {
+                    option("Percentage", .percent, help: "Percentage done")
+                    option("Speed", .speed, help: "Copy, verify or render speed")
+                    option("Time left", .remaining, help: "Time remaining")
+                    option("Jobs", .jobCount, help: "Number of jobs")
+                    option("Wheel", .wheel, help: "Progress wheel")
+                }
+                .frame(maxWidth: .infinity)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("Menu bar")
+                    InfoButton("What the menu bar icon shows during a job. With nothing chosen, the drive icon itself takes the job's colour. If it would be hidden by the notch or a full menu bar, it leaves out the number of jobs, then the wheel, the percentage and the speed.")
+                }
+            }
+            .disabled(!prefs.showMenuBar)
+            Section {
                 NotchPreview(left: prefs.notchLeft, right: prefs.notchRight, hasNotch: hasNotch)
                 side(hasNotch ? "Left of the notch" : "Left", \.notchLeft)
                 side(hasNotch ? "Right of the notch" : "Right", \.notchRight)
                 Picker("Open when the pointer rests on it for", selection: $prefs.hoverDelay) {
                     Text("No delay").tag(0.0)
-                    ForEach([0.5, 1, 2], id: \.self) { Text("\($0.formatted()) s").tag($0) }
+                    ForEach([0.1, 0.3, 0.5, 1], id: \.self) { Text("\($0.formatted()) s").tag($0) }
                 }
             } header: {
                 HStack(spacing: 4) {
@@ -351,3 +361,29 @@ struct NotchPreview: View {
     }
 }
 
+
+/// The menu bar pill as set, drawn by the pill's own code with sample figures.
+struct MenuBarPreview: View {
+    let options: MenuBarOptions
+
+    var body: some View {
+        Group {
+            if text.isEmpty && !options.contains(.wheel) {
+                Image(systemName: "externaldrive.badge.checkmark").font(.system(size: 15))
+            } else {
+                Image(nsImage: PillPicture.still(text: text, fraction: 0.42, wheel: options.contains(.wheel)))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 40)
+    }
+
+    private var text: String {
+        var job = Job(id: "preview", url: "", kind: "Copy", startedAt: Date(), lastActivity: Date())
+        job.info = JobInfo(title: "A001", totalBytes: 100, totalTasks: 2, alreadyDoneBytes: 42)
+        job.currentFile = "A001C001.MOV"
+        let queued = Job(id: "queued", url: "", kind: "Render", startedAt: Date(), lastActivity: Date())
+        return MenuBarStatus.text(for: [job, queued], options: options,
+                                  readouts: ["preview": Readout(speed: "466.6 MB/s", remaining: "1m 05s")])
+    }
+}

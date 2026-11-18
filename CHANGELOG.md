@@ -2,9 +2,11 @@
 
 ## 1.0.6 - 2026-11-18
 
-- Past jobs can be hidden from the island and the menu (Show Past Jobs in the menu, or Settings), and Settings chooses how many: today's, this week's, or the last 5, 10 or 20. Finished jobs are now kept between launches for 14 days, so This week survives a restart or an update.
-- The island can wait until the pointer has rested on the notch for 0.5, 1 or 2 seconds before opening (Settings).
+- Past jobs can be hidden from the island and the menu in Settings, which also chooses how many: today's, this week's, or the last 5, 10 or 20. Finished jobs are now kept between launches for 14 days, so This week survives a restart or an update.
+- The island can wait until the pointer has rested on the notch for 0.1, 0.3, 0.5 or 1 second before opening (Settings).
 - Show Island in the menu bar menu turns the island on and off.
+- Settings has its own Menu bar section, with a preview of the pill drawn as the menu bar draws it.
+- The app icon no longer shows blank in the Dock and the app switcher while Settings or About is open.
 - The menu scrolls when it is taller than the screen, as on a 1920x1080 display: each job row is its own menu item. Settings also fits the screen's height and scrolls.
 
 ## 1.0.5 - 2026-11-10

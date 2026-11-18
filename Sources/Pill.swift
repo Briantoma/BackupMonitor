@@ -57,12 +57,6 @@ final class MenuBarPill: NSObject {
         item.button?.imagePosition = .imageOnly
     }
 
-    /// The pill's width when fully open: the wheel's circle, then the text.
-    private func fullWidth(_ text: String, wheel: Bool) -> CGFloat {
-        guard !text.isEmpty else { return view.diameter }
-        let width = PillPicture.slots(text).reduce(0) { $0 + $1.width }
-        return ceil((wheel ? view.diameter : PillPicture.textInset) + width + PillPicture.textInset)
-    }
 
     func update(open: Bool, text: String, fraction: Double?, wheel: Bool, tone: PillTone) {
         target = open ? 1 : 0
@@ -76,7 +70,7 @@ final class MenuBarPill: NSObject {
         guard open || openness == 0 else { return keepAnimating() }
         view.fraction = fraction ?? 0
         view.wheel = wheel
-        let width = fullWidth(text, wheel: wheel)
+        let width = view.fullWidth(text, wheel: wheel)
         if openness == 0 {
             // Closed: the opening itself will widen it.
             view.text = text
@@ -231,6 +225,28 @@ final class PillPicture {
             let lead = index == 0 ? "" : " · "
             let room = max(width(lead + part), width(lead + MenuBarStatus.room(for: part)))
             return (lead, part, room, MenuBarStatus.alignsRight(part))
+        }
+    }
+
+    /// The pill's width when fully open: the wheel's circle, then the text.
+    func fullWidth(_ text: String, wheel: Bool) -> CGFloat {
+        guard !text.isEmpty else { return diameter }
+        let width = Self.slots(text).reduce(0) { $0 + $1.width }
+        return ceil((wheel ? diameter : Self.textInset) + width + Self.textInset)
+    }
+
+    /// The fully open pill as a still image, for the preview in Settings.
+    static func still(text: String, fraction: Double, wheel: Bool) -> NSImage {
+        let picture = PillPicture()
+        picture.text = text
+        picture.fraction = fraction
+        picture.wheel = wheel
+        picture.fullWidth = picture.fullWidth(text, wheel: wheel)
+        picture.shape = PillShape(openness: 1)
+        picture.shownSince = Dictionary(uniqueKeysWithValues: slots(text).indices.map { ($0, Date.distantPast) })
+        return NSImage(size: NSSize(width: picture.fullWidth, height: picture.diameter), flipped: false) { rect in
+            MainActor.assumeIsolated { picture.draw(in: rect) }
+            return true
         }
     }
 

@@ -1136,9 +1136,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let island = menu.addItem(withTitle: "Show Island", action: #selector(toggleIsland), keyEquivalent: "")
         island.target = self
         island.state = prefs.showIsland ? .on : .off
-        let pastJobs = menu.addItem(withTitle: "Show Past Jobs", action: #selector(togglePastJobs), keyEquivalent: "")
-        pastJobs.target = self
-        pastJobs.state = prefs.showPastJobs ? .on : .off
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "About Backup Monitor", action: #selector(showAbout), keyEquivalent: "").target = self
@@ -1146,7 +1143,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     @objc private func toggleIsland() { prefs.showIsland.toggle() }
-    @objc private func togglePastJobs() { prefs.showPastJobs.toggle() }
 
     private func item(for volume: VolumeStatus) -> NSMenuItem {
         let item = NSMenuItem(title: volume.name, action: #selector(reveal), keyEquivalent: "")
