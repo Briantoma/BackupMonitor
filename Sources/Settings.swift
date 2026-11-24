@@ -201,7 +201,8 @@ struct SettingsView: View {
 
     private var form: some View {
         Form {
-            Section("Show") {
+            Section {
+                Toggle("Open at Login", isOn: Binding(get: { store.opensAtLogin }, set: { _ in store.toggleLogin() }))
                 Picker("Update speed and time left every", selection: $prefs.refreshInterval) {
                     ForEach([1.0, 2, 5, 10], id: \.self) { Text("\(Int($0)) s").tag($0) }
                 }
@@ -324,7 +325,6 @@ struct SettingsView: View {
                 if let problem = updater.installProblem {
                     Text(problem).font(.caption).foregroundStyle(.red)
                 }
-                Toggle("Open at Login", isOn: Binding(get: { store.opensAtLogin }, set: { _ in store.toggleLogin() }))
                 HStack {
                     if let update = updater.available {
                         Text("Version \(update.version) is available")
