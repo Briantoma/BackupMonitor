@@ -298,7 +298,7 @@ check(pace.readout(at: second(30), showsBytes: true)?.remaining, "2m 40s", "time
 check(pace.readout(at: second(30), showsBytes: false)?.speed, nil, "renders keep their FPS")
 var stuck = Pace()
 for t in stride(from: 0.0, through: 25, by: 0.5) { stuck.add(second(t), bytes: 5e9, fraction: 0.5) }
-check(stuck.readout(at: second(25), showsBytes: true), Readout(speed: "—", remaining: "—"), "nothing moved in 20 s")
+check(stuck.readout(at: second(25), showsBytes: true), Readout(speed: "—", remaining: "—", bytesPerSecond: 0), "nothing moved in 20 s")
 check(Format.speed(3.214e9), "3.21 GB/s", "gigabytes per second")
 
 // A verify job is named after the disk it reads back.
@@ -428,5 +428,52 @@ let pastRows = RecentRow.group(reloaded)
 check(PastJobsShown.today.pick(pastRows, now: noon, calendar: utc).map(\.title), ["CARD_a"], "today only")
 check(PastJobsShown.week.pick(pastRows, now: noon, calendar: utc).count, 2, "this week")
 check(PastJobsShown.last5.pick(pastRows, now: noon).count, 2, "last 5 of 2")
+
+// Several jobs at once: copies and verifies combined apart, as chosen in Settings.
+func running(_ id: String, _ kind: String) -> Job {
+    var job = Job(id: id, url: "", kind: kind, startedAt: Date(), lastActivity: Date())
+    job.info = JobInfo(title: id, totalBytes: 100, totalTasks: 2)
+    job.currentFile = "a.MOV"
+    return job
+}
+let c1 = running("c1", "Copy"), c2 = running("c2", "Copy"), v1 = running("v1", "Verify"), r1 = running("r1", "Render")
+var r1Speed = r1; r1Speed.speed = "48 fps"
+let rates = ["c1": Readout(speed: "300.0 MB/s", bytesPerSecond: 300e6), "c2": Readout(speed: "100.0 MB/s", bytesPerSecond: 100e6),
+             "v1": Readout(speed: "1.50 GB/s", bytesPerSecond: 1.5e9)]
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: rates, mode: .total), "400.0 MB/s", "total of two copies")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: rates, mode: .average), "200.0 MB/s", "average")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: rates, mode: .slowest), "100.0 MB/s", "slowest")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: rates, mode: .fastest), "300.0 MB/s", "fastest")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: rates, mode: .first), "300.0 MB/s", "first job only")
+check(CombinedSpeed.text(for: [c1, c2, v1], following: c1, readouts: rates, mode: .total),
+      "Copy 400.0 MB/s · Verify 1.50 GB/s", "copy and verify apart")
+check(CombinedSpeed.text(for: [c1, c2, v1], following: c1, readouts: rates, mode: .total, both: false), "400.0 MB/s",
+      "only the followed kind where room is short")
+check(CombinedSpeed.text(for: [v1, c1], following: v1, readouts: rates, mode: .total, both: false), "1.50 GB/s", "verify followed")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: ["c1": Readout(speed: "—", bytesPerSecond: 0)], mode: .total),
+      "—", "nothing moved")
+check(CombinedSpeed.text(for: [c1, c2], following: c1, readouts: [:], mode: .total), nil, "not measured yet")
+check(CombinedSpeed.text(for: [c1, v1], following: c1, readouts: ["v1": rates["v1"]!], mode: .total), "Verify 1.50 GB/s",
+      "only the other kind measured yet")
+check(CombinedSpeed.text(for: [c1, v1], following: c1, readouts: ["v1": rates["v1"]!], mode: .total, both: false), nil,
+      "the island waits for its own kind")
+check(CombinedSpeed.text(for: [r1Speed, c1], following: r1Speed, readouts: rates, mode: .total), "48 fps", "a render keeps its FPS")
+check(MenuBarStatus.text(for: [c1, c2], options: [.speed], readouts: rates, speedMode: .total), "400.0 MB/s", "menu bar total")
+// Time left: the longest of all running jobs, whichever one is followed.
+let lefts = ["c1": Readout(remaining: "1m 0s", secondsLeft: 60), "v1": Readout(remaining: "5m 0s", secondsLeft: 300),
+             "c2": Readout(remaining: "—")]
+check(LongestRemaining.text(for: [c1, v1], following: c1, readouts: lefts), "5m 0s", "longest time left")
+check(LongestRemaining.text(for: [c1, c2, v1], following: c1, readouts: lefts), "—", "a stalled job has no end in sight")
+check(MenuBarStatus.text(for: [c1, v1], options: [.remaining], readouts: lefts), "5m 0s", "menu bar shows the longest")
+check(LongestRemaining.text(for: [c2], following: c2, readouts: lefts), "—", "only a stalled job")
+check(LongestRemaining.text(for: [c1], following: c1, readouts: [:]), nil, "nothing measured yet")
+// An offload's copy speed counts only time spent copying, not the verify after each file.
+var copier = running("cp", "Copy")
+copier.info = JobInfo(title: "A001", sizes: ["a.MOV": 400e6, "b.MOV": 400e6], totalBytes: 800e6, totalTasks: 2)
+copier.copies = [("a.MOV", second(0), second(1)), ("b.MOV", second(3), second(4))]
+check(copier.copySpeed(now: second(10)), 400e6, "two 1 s copies with a verify gap between")
+check(copier.copySpeed(now: second(100)), nil, "nothing copied in the last minute")
+check(running("vv", "Verify").copySpeed(now: second(10)), nil, "verify jobs have no copy speed")
+check([c1.kindTag, v1.kindTag, r1.kindTag], ["Copy", "Verify", "Transcode"], "kind beside the card name")
 
 if failures == 0 { print("All tests passed") } else { exit(1) }

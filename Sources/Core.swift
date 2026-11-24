@@ -110,6 +110,14 @@ struct Job: Identifiable {
         return disks.isEmpty ? nil : "Verify \(info.title)"
     }
 
+    /// What a verify job reads back, for the line under its name: the card, or "3 disks" (Lab 8).
+    var verifySubject: String? {
+        guard kind == "Verify", let info, !info.verified.isEmpty else { return nil }
+        let disks = verifiedDisks
+        if disks.count > 1 { return "\(disks.count) disks" }
+        return disks.isEmpty ? nil : info.title
+    }
+
     var kindLabel: String {
         switch kind {
         case "Copy": return "Offload"
@@ -194,6 +202,22 @@ struct Readout: Equatable {
     /// nil for jobs without byte sizes (renders), which keep Silverstack's own FPS.
     var speed: String?
     var remaining: String?
+    /// The measured speed as a number, 0 when nothing moved, for adding jobs together.
+    var bytesPerSecond: Double? = nil
+    /// The time left in seconds, for finding the longest of several jobs.
+    var secondsLeft: Double? = nil
+}
+
+/// The menu bar and the closed island give the longest time left of all running jobs: when
+/// that has passed, everything is done. A job that has stalled has no end in sight, so "—".
+enum LongestRemaining {
+    static func text(for jobs: [Job], following job: Job, readouts: [String: Readout]) -> String? {
+        let working = jobs.filter { $0.state == .running && !$0.isWaiting }
+        if working.contains(where: { readouts[$0.id]?.remaining == Readout.stalled }) { return Readout.stalled }
+        let seconds = working.compactMap { readouts[$0.id]?.secondsLeft }
+        if let longest = seconds.max() { return Format.duration(longest) }
+        return job.state == .running ? readouts[job.id]?.remaining : nil
+    }
 }
 
 /// A job's progress over its last 20 s of work. Until 20 s have passed it averages the last 3 s,
@@ -217,14 +241,92 @@ struct Pace {
         let from = samples.last { $0.date <= now.addingTimeInterval(-window) } ?? first
         let seconds = now.timeIntervalSince(from.date), progress = last.fraction - from.fraction
         guard progress > 0, seconds > 0 else {
-            return Readout(speed: showsBytes ? Readout.stalled : nil, remaining: Readout.stalled)
+            return Readout(speed: showsBytes ? Readout.stalled : nil, remaining: Readout.stalled,
+                           bytesPerSecond: showsBytes ? 0 : nil)
         }
-        return Readout(speed: showsBytes ? Format.speed((last.bytes - from.bytes) / seconds) : nil,
-                       remaining: Format.duration((1 - last.fraction) * seconds / progress))
+        let rate = (last.bytes - from.bytes) / seconds, left = (1 - last.fraction) * seconds / progress
+        return Readout(speed: showsBytes ? Format.speed(rate) : nil, remaining: Format.duration(left),
+                       bytesPerSecond: showsBytes ? rate : nil, secondsLeft: left)
+    }
+}
+
+/// The speed shown in the menu bar and the closed island while several jobs move bytes at once.
+enum SpeedMode: String, CaseIterable {
+    case total, average, slowest, fastest, first
+
+    var label: String {
+        switch self {
+        case .total: return "Total"
+        case .average: return "Average"
+        case .slowest: return "Slowest"
+        case .fastest: return "Fastest"
+        case .first: return "First job"
+        }
+    }
+}
+
+/// Copy jobs and verify jobs are combined apart: a verify reading back a disk says nothing about
+/// how fast cards are being copied. Uploads count with the copies.
+enum CombinedSpeed {
+    /// "1.84 GB/s" while only one kind runs; "Copy 1.84 GB/s · Verify 3.20 GB/s" with both when
+    /// `both` is set, otherwise only the followed job's kind. A render keeps its own FPS.
+    static func text(for jobs: [Job], following job: Job, readouts: [String: Readout], mode: SpeedMode,
+                     both: Bool = true) -> String? {
+        let own = job.shownSpeed(readouts[job.id])
+        guard mode != .first, job.showsBytes else { return own }
+        let copy = combine(jobs.filter { $0.kind != "Verify" }, readouts, mode)
+        let verify = combine(jobs.filter { $0.kind == "Verify" }, readouts, mode)
+        let isVerify = job.kind == "Verify", followed = isVerify ? verify : copy
+        if both {
+            if let copy, let verify { return "Copy \(copy) · Verify \(verify)" }
+            // Only the other kind measured yet, as in a new job's first seconds: named, so it isn't taken for this one.
+            if followed == nil, let other = isVerify ? copy : verify { return "\(isVerify ? "Copy" : "Verify") \(other)" }
+        }
+        return followed ?? own
+    }
+
+    /// nil until one of the jobs has been measured; "—" when none of them moved.
+    static func combine(_ jobs: [Job], _ readouts: [String: Readout], _ mode: SpeedMode) -> String? {
+        let rates = jobs.filter { $0.state == .running && !$0.isWaiting && $0.showsBytes }
+            .compactMap { readouts[$0.id]?.bytesPerSecond }
+        guard !rates.isEmpty else { return nil }
+        let total = rates.reduce(0, +)
+        let value: Double
+        switch mode {
+        case .total, .first: value = total
+        case .average: value = total / Double(rates.count)
+        case .slowest: value = rates.min() ?? 0
+        case .fastest: value = rates.max() ?? 0
+        }
+        return value > 0 ? Format.speed(value) : Readout.stalled
     }
 }
 
 extension Job {
+    /// "Copy", "Verify", "Transcode" or "Upload", shown beside the card name.
+    var kindTag: String {
+        switch kind {
+        case "Copy": return "Copy"
+        case "Render": return "Transcode"
+        case "DailiesUpload": return "Upload"
+        default: return kind
+        }
+    }
+
+    /// An offload's real copy speed: the bytes of the files it finished copying in the last
+    /// minute over the time spent copying them, leaving out the time each file then spends being
+    /// verified, which made the speed swing. nil before a file has finished copying.
+    func copySpeed(now: Date, within window: TimeInterval = 60) -> Double? {
+        guard kind == "Copy", let info else { return nil }
+        var copying: TimeInterval = 0, bytes = 0.0, reach = Date.distantPast
+        for copy in copies.filter({ now.timeIntervalSince($0.end) <= window }).sorted(by: { $0.start < $1.start }) {
+            copying += max(copy.end.timeIntervalSince(max(copy.start, reach)), 0)
+            reach = max(reach, copy.end)
+            bytes += info.size(of: copy.name)
+        }
+        return copying >= 1 && bytes > 0 ? bytes / copying : nil
+    }
+
     /// The measured speed, or Silverstack's FPS for a render, which has no byte sizes.
     func shownSpeed(_ readout: Readout?) -> String? {
         guard state == .running else { return nil }
@@ -660,12 +762,16 @@ enum MenuBarStatus {
     /// The job the menu bar follows: the first one actually copying or rendering.
     static func active(_ jobs: [Job]) -> Job? { jobs.first { !$0.state.isFinished && !$0.isWaiting } }
 
-    static func text(for jobs: [Job], options: MenuBarOptions, readouts: [String: Readout]) -> String {
+    static func text(for jobs: [Job], options: MenuBarOptions, readouts: [String: Readout],
+                     speedMode: SpeedMode = .first) -> String {
         guard let job = active(jobs) else { return "" }
         var parts: [String] = []
         if options.contains(.percent), let fraction = job.fraction { parts.append("\(Format.percent(fraction))%") }
-        if options.contains(.speed), let speed = job.shownSpeed(readouts[job.id]) { parts.append(speed) }
-        if options.contains(.remaining), job.state == .running, let remaining = readouts[job.id]?.remaining { parts.append(remaining) }
+        if options.contains(.speed),
+           let speed = CombinedSpeed.text(for: jobs, following: job, readouts: readouts, mode: speedMode) { parts.append(speed) }
+        if options.contains(.remaining), let remaining = LongestRemaining.text(for: jobs, following: job, readouts: readouts) {
+            parts.append(remaining)
+        }
         if options.contains(.jobCount) {
             let count = jobs.filter { !$0.state.isFinished }.count
             parts.append("\(count) job\(count == 1 ? "" : "s")")

@@ -115,6 +115,8 @@ final class Store: ObservableObject {
     /// Finished jobs kept between launches, newest first.
     private var saved: [PastJob] = UserDefaults.standard.data(forKey: "pastJobs.saved")
         .flatMap { try? JSONDecoder().decode([PastJob].self, from: $0) } ?? []
+    /// When past jobs were last cleared from the menu.
+    private var pastJobsCleared = UserDefaults.standard.object(forKey: "pastJobs.cleared") as? Date ?? .distantPast
     private var notifiedSlow = Set<String>()
     private var seenFinished = Set<String>()
 
@@ -223,8 +225,10 @@ final class Store: ObservableObject {
         let prefs = Preferences.shared
         var nowSlow = speedWatch.update(jobs: combined, rules: prefs.rules, now: Date())
         if let demo = demoSlow() { nowSlow.append(demo) }
+        // With the warning off nothing turns orange for speed and nothing is announced.
+        if !prefs.notifySlow { nowSlow = [] }
         if nowSlow != slow { slow = nowSlow }
-        for card in nowSlow where notifiedSlow.insert(card.key).inserted && prefs.notifySlow {
+        for card in nowSlow where notifiedSlow.insert(card.key).inserted {
             Notifier.post(id: "slow-\(card.key)", title: "Slow copy: \(card.card)",
                           body: "\(Int(card.speed)) MB/s, under the \(Int(card.minimum)) MB/s minimum for \(card.group.label.lowercased()).")
         }
@@ -240,7 +244,8 @@ final class Store: ObservableObject {
         if finished.map(\.signature) != lastFinished {
             lastFinished = finished.map(\.signature)
             for job in finished where seenFinished.insert(job.id).inserted && prefs.notifyJobs { announce(job) }
-            saved = PastJob.merge(finished, into: saved, now: Date())
+            // Jobs that ended before the list was last cleared stay out of it.
+            saved = PastJob.merge(finished.filter { ($0.endedAt ?? $0.lastActivity) > pastJobsCleared }, into: saved, now: Date())
             if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: "pastJobs.saved") }
             recentJobs = saved.map(\.job)
             refreshVolumes()
@@ -258,7 +263,15 @@ final class Store: ObservableObject {
         paces = paces.filter { id, _ in working.contains { $0.id == id } }
         for job in working { paces[job.id, default: Pace()].add(date, bytes: job.doneBytes, fraction: job.fraction ?? 0) }
         var fresh: [String: Readout] = [:]
-        for job in working { fresh[job.id] = paces[job.id]?.readout(at: date, showsBytes: job.showsBytes) }
+        for job in working {
+            guard var readout = paces[job.id]?.readout(at: date, showsBytes: job.showsBytes) else { continue }
+            // An offload shows its copy speed while it is moving; a stall still shows as "—".
+            if (readout.bytesPerSecond ?? 0) > 0, let copy = job.copySpeed(now: date) {
+                readout.speed = Format.speed(copy)
+                readout.bytesPerSecond = copy
+            }
+            fresh[job.id] = readout
+        }
         let due = date.timeIntervalSince(lastReadout) >= Preferences.shared.refreshInterval - 0.25
         if due || Set(fresh.keys) != Set(readouts.keys) {
             lastReadout = date
@@ -287,6 +300,15 @@ final class Store: ObservableObject {
                 source.tracker.setInfo(info, forJob: job.id)
             }
         }
+    }
+
+    /// Empties the past jobs, also those Silverstack's log still holds, until new ones finish.
+    func clearPastJobs() {
+        pastJobsCleared = Date()
+        UserDefaults.standard.set(pastJobsCleared, forKey: "pastJobs.cleared")
+        saved = []
+        UserDefaults.standard.removeObject(forKey: "pastJobs.saved")
+        recentJobs = []
     }
 
     var visibleVolumes: [VolumeStatus] { volumes.visible(hidden: hiddenVolumes) }
@@ -350,14 +372,33 @@ final class Store: ObservableObject {
             job.info?.verified = disk.map { [$0] } ?? []
             return job
         }
-        let queued = [waiting("demo-verify-1", "Verify", "BACKUP_1"), waiting("demo-verify-2", "Verify", "BACKUP_2"),
-                      waiting("demo-queued", "Render", nil)]
+        // A second offload and a verify run alongside, so the combined speed, the longest time
+        // left and the kind beside each name can be seen.
+        func other(_ id: String, _ kind: String, _ title: String, _ file: String, _ size: Double, _ fraction: Double) -> Job {
+            var job = Job(id: id, url: "", kind: kind, workflow: "Demo Workflow",
+                          startedAt: started.addingTimeInterval(-60), lastActivity: Date())
+            job.info = JobInfo(title: title, sizes: [file: size], totalBytes: size, totalTasks: 12)
+            if kind == "Verify" { job.info?.verified = ["BACKUP_1"] }
+            job.active = [file: min(fraction, 1)]
+            job.phase = kind == "Verify" ? "verify" : "copy"
+            job.currentFile = file
+            if fraction >= 1 {
+                job.state = .succeeded
+                job.endedAt = Date()
+            }
+            return job
+        }
+        func alongside(_ fraction: Double) -> [Job] {
+            [other("demo-b", "Copy", "DEMO_REEL_B001", "B001C003.MOV", 4.0e9, fraction * 0.9 + 0.1),
+             other("demo-verify-run", "Verify", "DEMO_REEL_A000", "A000C012.MOV", 12.0e9, fraction * 0.7 + 0.3)]
+        }
+        let queued = [waiting("demo-verify-1", "Verify", "BACKUP_2"), waiting("demo-queued", "Render", nil)]
         var fraction = 0.0
-        demoJobs = [job(0)] + queued
+        demoJobs = [job(0)] + alongside(0) + queued
         let demo = Timer(timeInterval: 0.1, repeats: true) { [weak self] timer in
             guard let self else { return timer.invalidate() }
             fraction = min(fraction + 0.005, 1)
-            self.demoJobs = fraction < 1 ? [job(fraction)] + queued : [job(fraction)]
+            self.demoJobs = [job(fraction)] + alongside(fraction) + (fraction < 1 ? queued : [])
             if fraction >= 1 {
                 timer.invalidate()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.demoJobs = nil }
@@ -391,6 +432,8 @@ struct IslandMetrics {
     var left: [NotchItem] = [.ring, .none]
     var right: [NotchItem] = [.percent, .none]
     var expandedWidth: CGFloat = 460
+    /// The open island never runs off the bottom of the screen: past jobs and volumes scroll instead.
+    var maxHeight: CGFloat = .greatestFiniteMagnitude
     /// Either side of the notch is as wide as the wider one, so the notch stays centred. Without a
     /// notch the two sides sit next to each other.
     var leftWidth: CGFloat { hasNotch ? max(Self.width(of: left), Self.width(of: right)) : Self.width(of: left) }
@@ -415,6 +458,18 @@ struct IslandMetrics {
         let shown = items.filter { $0 != .none }
         guard !shown.isEmpty else { return 0 }
         return 20 + shown.map(width(of:)).reduce(0, +) + itemSpacing * CGFloat(shown.count - 1)
+    }
+
+    /// The open island's full height for what the store holds, and how much of it is past jobs and volumes.
+    func expanded(_ store: Store) -> (height: CGFloat, lists: CGFloat) {
+        let listed = store.listed, hovering = store.isHovering
+        let recent = hovering ? store.recent.count : 0
+        let volumes: Int? = hovering && Preferences.shared.showVolumes && !store.volumes.isEmpty ? store.listedVolumes.count : nil
+        let height = Self.expandedHeight(full: listed.full.count, compact: listed.compact.count, more: listed.more > 0,
+                                         recent: recent, volumes: volumes, hovering: hovering,
+                                         warning: store.logProblem != nil, top: self.height)
+        let lists = (recent > 0 ? 26 + CGFloat(recent) * 26 : 0) + (volumes.map { 26 + CGFloat($0) * 26 } ?? 0)
+        return (height, lists)
     }
 
     static func expandedHeight(full: Int, compact: Int, more: Bool, recent: Int, volumes: Int?, hovering: Bool,
@@ -495,8 +550,16 @@ struct IslandView: View {
             case .more(let count):
                 Text("+\(count) more").font(.system(size: 11.5)).foregroundColor(palette.faint).frame(height: 22)
             case .pastHeader:
-                Text("Recently completed").font(.system(size: 11, weight: .semibold)).foregroundColor(palette.faint)
-                    .frame(height: 22, alignment: .bottom)
+                HStack {
+                    Text("Recently completed").font(.system(size: 11, weight: .semibold)).foregroundColor(palette.faint)
+                    Spacer()
+                    // The open menu is rebuilt without these rows once they're gone.
+                    Button("Clear") { DispatchQueue.main.async { store.clearPastJobs() } }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(palette.button)
+                }
+                .frame(height: 22, alignment: .bottom)
             case .past(let row): recentRow(row).frame(height: 26)
             }
         }
@@ -556,12 +619,13 @@ struct IslandView: View {
     }
 
     private func notchTexts(_ job: Job) -> [NotchItem: String] {
-        let readout = store.readouts[job.id]
         let count = store.shown.filter { !$0.state.isFinished }.count
         var texts: [NotchItem: String] = [.percent: shortStatus(job), .jobCount: "\(count) job\(count == 1 ? "" : "s")"]
         if job.state == .running {
-            texts[.speed] = job.shownSpeed(readout)
-            texts[.remaining] = readout?.remaining
+            // Only the followed job's kind: two speeds don't fit beside the notch.
+            texts[.speed] = CombinedSpeed.text(for: store.shown, following: job, readouts: store.readouts,
+                                               mode: Preferences.shared.speedMode, both: false)
+            texts[.remaining] = LongestRemaining.text(for: store.shown, following: job, readouts: store.readouts)
         }
         return texts
     }
@@ -612,6 +676,7 @@ struct IslandView: View {
     private func compactRow(_ job: Job) -> some View {
         HStack(spacing: 8) {
             Text(job.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            kindTag(job, size: 11)
             Spacer(minLength: 8)
             Capsule().fill(palette.track)
                 .overlay(alignment: .leading) {
@@ -642,14 +707,24 @@ struct IslandView: View {
                         .font(.system(size: 12, weight: .medium)).foregroundColor(.orange)
                         .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
                 }
-                if !store.recent.isEmpty { recentList }
-                if !store.volumes.isEmpty { volumeList }
+                let room = metrics.expanded(store), overflow = room.height - metrics.maxHeight
+                if overflow > 0 {
+                    ScrollView { VStack(spacing: 8) { pastAndVolumes } }
+                        .frame(height: max(room.lists - overflow, 60))
+                } else {
+                    pastAndVolumes
+                }
                 controls
             }
         }
         .padding(.top, metrics.height + 8)
         .padding(.bottom, 12)
         .padding(.horizontal, 18)
+    }
+
+    @ViewBuilder private var pastAndVolumes: some View {
+        if !store.recent.isEmpty { recentList }
+        if Preferences.shared.showVolumes && !store.volumes.isEmpty { volumeList }
     }
 
     private var volumeList: some View {
@@ -715,10 +790,15 @@ struct IslandView: View {
 
     private var recentList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Recently completed")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(palette.faint)
-                .frame(height: 18, alignment: .top)
+            HStack {
+                Text("Recently completed").foregroundColor(palette.faint)
+                Spacer()
+                Button("Clear") { store.clearPastJobs() }
+                    .buttonStyle(.plain)
+                    .foregroundColor(palette.button)
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .frame(height: 18, alignment: .top)
             ForEach(store.recent) { recentRow($0).frame(height: 26) }
         }
     }
@@ -768,6 +848,7 @@ struct IslandView: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(job.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                kindTag(job, size: 12)
                 Spacer(minLength: 8)
                 if job.state == .failed {
                     Button("Dismiss") { store.dismiss(job) }.buttonStyle(.plain)
@@ -793,14 +874,29 @@ struct IslandView: View {
         }
     }
 
+    /// Copy, Verify, Transcode or Upload, beside the card name.
+    private func kindTag(_ job: Job, size: CGFloat) -> some View {
+        Text(job.kindTag).font(.system(size: size, weight: .medium))
+            .foregroundColor(palette.faint).lineLimit(1).fixedSize()
+    }
+
     private func detailLine(_ job: Job) -> String {
-        var parts = [job.verifyLabel ?? job.phase.map { $0.capitalized } ?? job.kindLabel]
+        // The kind is beside the name, so this starts with the card a verify reads back, or the
+        // phase of an offload's current file when it is being checked rather than copied.
+        var parts: [String] = []
+        if let subject = job.verifySubject {
+            parts.append(subject)
+        } else if job.kind == "Copy", let phase = job.phase?.capitalized, phase != job.kindTag {
+            parts.append(phase)
+        }
         if job.state == .finishing { parts = ["Finishing"] }
         if let info = job.info {
+            // With sizes shown, the file count is left out so the time left fits on the line.
             if job.showsBytes && !job.state.isFinished {
                 parts.append("\(Format.bytes(job.doneBytes)) of \(Format.bytes(info.totalBytes))")
+            } else {
+                parts.append("\(job.doneTasks)/\(info.totalTasks) files")
             }
-            parts.append("\(job.doneTasks)/\(info.totalTasks) files")
         }
         if let speed = job.shownSpeed(store.readouts[job.id]) { parts.append(speed) }
         if job.state == .running, let remaining = store.readouts[job.id]?.remaining { parts.append("\(remaining) left") }
@@ -864,6 +960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             DispatchQueue.main.async {
                 self?.layoutPanel()
                 self?.updateStatusItem()
+                self?.refreshOpenMenu()
             }
         }
         prefsUpdates = prefs.objectWillChange.sink { [weak self] in
@@ -909,13 +1006,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     private static func measure(_ screen: NSScreen) -> IslandMetrics {
         let prefs = Preferences.shared
-        guard screen.safeAreaInsets.top > 0,
-              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
-            return IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6, hasNotch: false,
-                                 left: prefs.notchLeft, right: prefs.notchRight)
+        var metrics: IslandMetrics
+        if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            metrics = IslandMetrics(notchWidth: screen.frame.width - left.width - right.width,
+                                    height: screen.safeAreaInsets.top, left: prefs.notchLeft, right: prefs.notchRight)
+        } else {
+            metrics = IslandMetrics(notchWidth: 110, height: NSStatusBar.system.thickness + 6, hasNotch: false,
+                                    left: prefs.notchLeft, right: prefs.notchRight)
         }
-        return IslandMetrics(notchWidth: screen.frame.width - left.width - right.width,
-                             height: screen.safeAreaInsets.top, left: prefs.notchLeft, right: prefs.notchRight)
+        metrics.maxHeight = screen.frame.height - 40
+        return metrics
     }
 
     @objc private func screensChanged() {
@@ -959,17 +1059,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             // A job turned up while the island was open from hovering: it now closes the slow way.
             islandOpenedByHover = false
         }
-        let recent = store.isHovering ? store.recent.count : 0
         guard prefs.showIsland, !jobs.isEmpty || store.isHovering else { return fadeIsland(in: false) }
         let expanded = store.isHovering || jobs.contains { $0.state == .failed }
-        let listed = store.listed
         let size = expanded
-            ? NSSize(width: metrics.expandedWidth,
-                     height: IslandMetrics.expandedHeight(full: listed.full.count, compact: listed.compact.count,
-                                                          more: listed.more > 0, recent: recent,
-                                                          volumes: store.isHovering && !store.volumes.isEmpty ? store.listedVolumes.count : nil,
-                                                          hovering: store.isHovering, warning: store.logProblem != nil,
-                                                          top: metrics.height))
+            ? NSSize(width: metrics.expandedWidth, height: min(metrics.expanded(store).height, metrics.maxHeight))
             : NSSize(width: metrics.collapsedWidth, height: metrics.height)
         let frame = topCentered(size)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
@@ -1093,11 +1186,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         statusItem.menu = menu
     }
 
-    func menuWillOpen(_ menu: NSMenu) { store.refreshVolumes() }
+    private var menuIsOpen = false
+    /// What the open menu was built from, so it is built again when that changes.
+    private var menuContents = ""
 
-    /// Built just before the menu opens and never while it is open: removing items from an open
-    /// menu leaves it at its old height, with a blank space at the bottom.
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        store.refreshVolumes()
+    }
+
+    func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
+
+    /// A job row keeps its height after its job has gone, leaving a blank space, so the open menu
+    /// is built again whenever its rows change: a job finishing, starting or moving to past jobs.
+    /// Items themselves can come and go while it is open; the menu takes their size.
+    private func refreshOpenMenu() {
+        guard menuIsOpen else { return }
+        guard menuContentsKey == menuContents else { return menuNeedsUpdate(menu) }
+        // Same volumes: only their free space may have changed, set in place without a rebuild.
+        for volume in store.visibleVolumes {
+            if let item = volumeItems[volume.path], item.attributedTitle != volumeTitle(volume) {
+                item.attributedTitle = volumeTitle(volume)
+            }
+        }
+    }
+
+    private var volumeItems: [String: NSMenuItem] = [:]
+
+    private var menuContentsKey: String {
+        let listed = store.listed
+        return [listed.full.map(\.id).joined(separator: ","), listed.compact.map(\.id).joined(separator: ","),
+                "\(listed.more)", store.recent.map(\.id).joined(separator: ","),
+                prefs.showVolumes ? store.visibleVolumes.map(\.key).joined(separator: ",") : "-",
+                store.logProblem ?? "", Updater.shared.available?.version ?? ""].joined(separator: "|")
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        menuContents = menuContentsKey
+        volumeItems = [:]
         menu.removeAllItems()
         if let update = Updater.shared.available {
             let updater = Updater.shared
@@ -1126,13 +1252,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             menu.addItem(item)
         }
         if !parts.isEmpty { menu.addItem(.separator()) }
-        let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        if store.visibleVolumes.isEmpty {
-            menu.addItem(withTitle: "No volumes to show", action: nil, keyEquivalent: "").isEnabled = false
+        if prefs.showVolumes {
+            let header = menu.addItem(withTitle: "Mounted Volumes", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            if store.visibleVolumes.isEmpty {
+                menu.addItem(withTitle: "No volumes to show", action: nil, keyEquivalent: "").isEnabled = false
+            }
+            for volume in store.visibleVolumes {
+                let item = item(for: volume)
+                volumeItems[volume.path] = item
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
         }
-        for volume in store.visibleVolumes { menu.addItem(item(for: volume)) }
-        menu.addItem(.separator())
         let island = menu.addItem(withTitle: "Show Island", action: #selector(toggleIsland), keyEquivalent: "")
         island.target = self
         island.state = prefs.showIsland ? .on : .off
@@ -1149,17 +1281,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         item.target = self
         item.representedObject = volume.path
         item.image = Self.ticks(ingested: volume.ingested, transcoded: volume.transcoded)
-        let title = NSMutableAttributedString(string: volume.name, attributes: [.font: NSFont.menuFont(ofSize: 0)])
-        title.append(NSAttributedString(string: "   \(Format.bytes(volume.freeBytes)) free", attributes: [
-            .font: NSFont.menuFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
-        ]))
-        item.attributedTitle = title
+        item.attributedTitle = volumeTitle(volume)
         if volume.transcoded {
             item.toolTip = "Ingest and transcoding complete"
         } else if volume.ingested {
             item.toolTip = "Ingest complete"
         }
         return item
+    }
+
+    private func volumeTitle(_ volume: VolumeStatus) -> NSAttributedString {
+        let title = NSMutableAttributedString(string: volume.name, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+        title.append(NSAttributedString(string: "   \(Format.bytes(volume.freeBytes)) free", attributes: [
+            .font: NSFont.menuFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        return title
     }
 
     /// Two fixed slots, so names line up whichever ticks a volume has.
@@ -1210,7 +1346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         followedJob = active?.id
         let green = (greenUntil ?? .distantPast) > now && active == nil
         let hasText = !options.subtracting(.wheel).isEmpty
-        let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, readouts: store.readouts)
+        let text = !hasText ? "" : failed ? "Failed" : green ? "Done" : MenuBarStatus.text(for: jobs, options: options, readouts: store.readouts,
+                                                                                                     speedMode: prefs.speedMode)
         let tone = MenuBarStatus.tone(for: jobs, slow: !store.slow.isEmpty, green: green, quietAfter: Store.silentAfter, now: now)
         let busy = active != nil || failed || green
         // With no readouts chosen, or none that fit, the drive icon itself takes the colour.
